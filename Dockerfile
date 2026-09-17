@@ -11,16 +11,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN mkdir -p data
 RUN npm run build
-
-FROM base AS bundler
-WORKDIR /app
-RUN npm install esbuild --no-save
-COPY --from=deps /app/node_modules ./node_modules
-COPY --from=builder /app/server.ts ./
-COPY --from=builder /app/.next ./.next
-COPY --from=builder /app/src ./src
-COPY package.json ./
-RUN node node_modules/.bin/esbuild server.ts \
+RUN npx esbuild server.ts \
   --bundle \
   --platform=node \
   --format=esm \
@@ -39,7 +30,7 @@ RUN adduser --system --uid 1001 nextjs
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
-COPY --from=bundler /app/server.mjs ./
+COPY --from=builder /app/server.mjs ./
 COPY package.json ./
 
 RUN mkdir -p data
