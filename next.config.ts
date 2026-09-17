@@ -6,8 +6,6 @@ const nextConfig: NextConfig = {
       { protocol: "https", hostname: "api2.viu.lk" },
     ],
   },
-  // Custom server handles all API routes
-  // Next.js only handles page rendering
 };
 
 export default nextConfig;
