@@ -12,6 +12,22 @@ COPY . .
 RUN mkdir -p data
 RUN npm run build
 
+FROM base AS bundler
+WORKDIR /app
+RUN npm install esbuild --no-save
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=builder /app/server.ts ./
+COPY --from=builder /app/.next ./.next
+COPY --from=builder /app/src ./src
+COPY package.json ./
+RUN node node_modules/.bin/esbuild server.ts \
+  --bundle \
+  --platform=node \
+  --format=esm \
+  --outfile=server.mjs \
+  --packages=external \
+  --banner:js="import { createRequire } from 'module'; const require = createRequire(import.meta.url);"
+
 FROM base AS runner
 WORKDIR /app
 ENV NODE_ENV=production
@@ -23,13 +39,10 @@ RUN adduser --system --uid 1001 nextjs
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
-COPY --from=builder /app/package.json ./
-COPY --from=builder /app/server.ts ./
+COPY --from=bundler /app/server.mjs ./
+COPY package.json ./
 
 RUN mkdir -p data
-
-RUN echo '{"compilerOptions":{"target":"ES2017","module":"esnext","moduleResolution":"bundler","paths":{"@/*":["./src/*"]},"jsx":"react-jsx","esModuleInterop":true,"skipLibCheck":true,"resolveJsonModule":true,"isolatedModules":true},"include":["**/*.ts","**/*.tsx","next-env.d.ts"]}' > tsconfig.json
-
 RUN chown -R nextjs:nodejs /app
 
 USER nextjs
@@ -38,4 +51,4 @@ EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
-CMD ["npx", "tsx", "server.ts"]
+CMD ["node", "server.mjs"]
