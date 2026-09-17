@@ -1530,6 +1530,9 @@ expressApp.use((req, res, next) => {
   next();
 });
 
+// ── HEALTH CHECK ────────────────────────────────────────────
+expressApp.get("/api/health", (_req, res) => { res.json({ ok: true, uptime: Math.round(process.uptime()) }); });
+
 // ── AUTH ROUTES ───────────────────────────────────────────────
 expressApp.get("/api/auth/state", (req, res) => {
   const deviceUid = req.headers["x-device-uid"] as string;
