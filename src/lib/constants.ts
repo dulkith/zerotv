@@ -4,6 +4,8 @@ export const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
 export const DRM_USER_AGENT = "Dart/3.3 (dart:io)";
+export const FP_DRM_USER_AGENT = "Dialog%E2%80%AFPlay/1 CFNetwork/1568.100.1 Darwin/24.0.0";
+export const FP_CERT_URL = "/cert";
 
 export const DIRECT_API = "https://api2.viu.lk";
 export const IMG_ACCESS_KEY = "WkVjNWNscFhORDBLCg==";

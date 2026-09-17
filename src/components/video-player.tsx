@@ -5,6 +5,7 @@ import { useEffect, useRef, useCallback, useState } from "react";
 interface VideoPlayerProps {
   streamUrl: string;
   licenseUrl: string;
+  licenseFp?: string;
   title: string;
   subtitle?: string;
   bannerId?: number | null;
@@ -18,7 +19,7 @@ declare global {
   interface Window { shaka: any; }
 }
 
-export function VideoPlayer({ streamUrl, licenseUrl, title, subtitle, bannerId, isLive, onBack, onEnded, nextLabel }: VideoPlayerProps) {
+export function VideoPlayer({ streamUrl, licenseUrl, licenseFp, title, subtitle, bannerId, isLive, onBack, onEnded, nextLabel }: VideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null!);
   const videoRef = useRef<HTMLVideoElement>(null);
   const shakaRef = useRef<any>(null);
@@ -155,19 +156,96 @@ export function VideoPlayer({ streamUrl, licenseUrl, title, subtitle, bannerId, 
         setError(d?.message || `Error ${d?.code}`);
       });
 
+      // Detect FairPlay vs Widevine
+      function detectDrmType(): "fairplay" | "widevine" {
+        if (/iPhone|iPad|iPod/.test(navigator.userAgent)) return "fairplay";
+        if (typeof (window as any).WebKitMediaKeys !== "undefined") return "fairplay";
+        return "widevine";
+      }
+      const drmType = licenseFp ? detectDrmType() : "widevine";
+      console.log("[shaka] DRM type:", drmType);
+
       const config: Record<string, unknown> = {
         drm: { retryParameters: { maxAttempts: 3, baseDelay: 500, backoffFactor: 2, timeout: 30000 } },
       };
-      if (licenseUrl) {
+
+      if (drmType === "fairplay" && licenseFp) {
+        (config.drm as Record<string, unknown>).servers = {
+          "com.apple.fps": licenseFp,
+          "com.apple.fps.1_0": licenseFp,
+        };
+        (config.drm as Record<string, unknown>).advanced = {
+          "com.apple.fps": { serverCertificateUri: "/cert" },
+          "com.apple.fps.1_0": { serverCertificateUri: "/cert" },
+        };
+      } else if (licenseUrl) {
         (config.drm as Record<string, unknown>).servers = { "com.widevine.alpha": licenseUrl };
       }
       player.configure(config);
 
       const uid = localStorage.getItem("deviceUid") || "";
-      player.getNetworkingEngine().registerRequestFilter((_type: any, request: any) => {
+      const net = player.getNetworkingEngine();
+
+      // Request filter: add device UID + FairPlay SPC wrapping
+      net.registerRequestFilter((type: any, request: any) => {
+        // Add device UID to all requests
         if (request?.headers) request.headers["x-device-uid"] = uid;
         else if (request?.getHeader) request.setHeader("x-device-uid", uid);
+
+        // FairPlay: wrap SPC in JSON for license requests
+        if (drmType === "fairplay" && type === (window as any).shaka?.net?.NetworkingEngine?.RequestType?.LICENSE) {
+          if (request.body && request.body.byteLength > 0) {
+            const spcBytes = new Uint8Array(request.body);
+            let binary = "";
+            const chunk = 0x8000;
+            for (let i = 0; i < spcBytes.length; i += chunk) {
+              binary += String.fromCharCode.apply(null, Array.from(spcBytes.subarray(i, i + chunk)));
+            }
+            const spcB64 = btoa(binary);
+            const jsonBody = JSON.stringify({ spc: spcB64, assetId: "" });
+            request.body = new TextEncoder().encode(jsonBody).buffer;
+            if (request.headers) {
+              request.headers["Content-Type"] = "application/json";
+            } else if (request.setHeader) {
+              request.setHeader("Content-Type", "application/json");
+            }
+          }
+        }
       });
+
+      // FairPlay response filter: extract CKC from JSON
+      if (drmType === "fairplay") {
+        net.registerResponseFilter((type: any, response: any) => {
+          if (type !== (window as any).shaka?.net?.NetworkingEngine?.RequestType?.LICENSE) return;
+          if (!response?.data) return;
+          const raw = new Uint8Array(response.data);
+          if (raw.length === 0) return;
+          try {
+            const text = new TextDecoder("utf-8", { fatal: false }).decode(raw);
+            if (text.trimStart().startsWith("{")) {
+              const parsed = JSON.parse(text);
+              const ckcField = parsed.ckc || parsed.CKC || parsed.license || parsed.License || parsed.contentKeyContext || parsed.payload;
+              if (typeof ckcField === "string" && ckcField.length > 0) {
+                const bin = atob(ckcField);
+                const bytes = new Uint8Array(bin.length);
+                for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                response.data = bytes.buffer;
+                return;
+              }
+              // Fallback: find any large base64 string
+              for (const [, v] of Object.entries(parsed)) {
+                if (typeof v === "string" && v.length > 100) {
+                  const bin = atob(v);
+                  const bytes = new Uint8Array(bin.length);
+                  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                  response.data = bytes.buffer;
+                  return;
+                }
+              }
+            }
+          } catch {}
+        });
+      }
 
       try {
         setBootLabel(title || "Loading");

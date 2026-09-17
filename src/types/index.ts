@@ -88,6 +88,8 @@ export interface SeriesEpisode {
 export interface StreamToken {
   url: string;
   license: string;
+  licenseWv?: string;
+  licenseFp?: string;
   licenseExpires: number;
   streamExpires: number;
   isLive: boolean;

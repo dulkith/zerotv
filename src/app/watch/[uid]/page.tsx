@@ -134,7 +134,8 @@ export default function WatchPage() {
   return (
     <VideoPlayer
       streamUrl={streamData.url}
-      licenseUrl={streamData.license}
+      licenseUrl={streamData.licenseWv || streamData.license}
+      licenseFp={streamData.licenseFp}
       title={meta.title}
       subtitle={meta.subtitle}
       bannerId={meta.bannerId}

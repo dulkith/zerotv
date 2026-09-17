@@ -412,6 +412,81 @@ export async function fetchWvLicenseProxyUrlVod(accessToken: string, contentId: 
   }
 }
 
+export async function fetchFairPlayLicenseUrlLive(accessToken: string, userId: string = "918558"): Promise<{ fp_license_proxy_url: string | null; fp_certificate_url: string | null }> {
+  try {
+    const headers: Record<string, string> = {
+      accept: "application/json, text/plain, */*",
+      authorization: `Bearer ${accessToken}`,
+      origin: "https://smarttv.viu.lk",
+      referer: "https://smarttv.viu.lk/",
+      "user-agent": USER_AGENT,
+    };
+    const up = await httpsRequest({
+      method: "GET",
+      hostname: "api2.viu.lk",
+      path: `/api/client/v1/default/users/${userId}/live/channels/channelone?translation=en`,
+      headers,
+    });
+    if (up.statusCode !== 200) return { fp_license_proxy_url: null, fp_certificate_url: null };
+    const j = JSON.parse(up.body.toString("utf8"));
+    return {
+      fp_license_proxy_url: j.data?.fp_license_proxy_url || null,
+      fp_certificate_url: j.data?.fp_certificate_url || null,
+    };
+  } catch {
+    return { fp_license_proxy_url: null, fp_certificate_url: null };
+  }
+}
+
+export async function fetchFairPlayLicenseUrlVod(accessToken: string, contentId: string = "23145", userId: string = "918558"): Promise<{ fp_license_proxy_url: string | null; fp_certificate_url: string | null }> {
+  try {
+    const headers: Record<string, string> = {
+      accept: "application/json, text/plain, */*",
+      authorization: `Bearer ${accessToken}`,
+      origin: "https://smarttv.viu.lk",
+      referer: "https://smarttv.viu.lk/",
+      "user-agent": USER_AGENT,
+    };
+    const up = await httpsRequest({
+      method: "GET",
+      hostname: "api3.viu.lk",
+      path: `/api/client/v1/default/users/${userId}/vod/trailers/movies/${contentId}`,
+      headers,
+    });
+    if (up.statusCode !== 200) return { fp_license_proxy_url: null, fp_certificate_url: null };
+    const j = JSON.parse(up.body.toString("utf8"));
+    return {
+      fp_license_proxy_url: j.data?.fp_license_proxy_url || null,
+      fp_certificate_url: j.data?.fp_certificate_url || null,
+    };
+  } catch {
+    return { fp_license_proxy_url: null, fp_certificate_url: null };
+  }
+}
+
+export async function fetchViuDevices(accessToken: string, userId: string = "918558"): Promise<Record<string, unknown> | null> {
+  try {
+    const headers: Record<string, string> = {
+      accept: "application/json, text/plain, */*",
+      authorization: `Bearer ${accessToken}`,
+      origin: "https://smarttv.viu.lk",
+      referer: "https://smarttv.viu.lk/",
+      "user-agent": USER_AGENT,
+    };
+    const up = await httpsRequest({
+      method: "GET",
+      hostname: "api2.viu.lk",
+      path: `/api/client/v1/default/users/${userId}/devices`,
+      headers,
+    });
+    if (up.statusCode !== 200) return null;
+    const j = JSON.parse(up.body.toString("utf8"));
+    return j.data || null;
+  } catch {
+    return null;
+  }
+}
+
 export interface RefreshResult {
   access_token: string;
   refresh_token: string;

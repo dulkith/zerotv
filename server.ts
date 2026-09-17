@@ -50,6 +50,9 @@ import {
   registerDeviceV2,
   fetchWvLicenseProxyUrlLive,
   fetchWvLicenseProxyUrlVod,
+  fetchFairPlayLicenseUrlLive,
+  fetchFairPlayLicenseUrlVod,
+  fetchViuDevices,
   refreshDeviceTokens,
 } from "./src/lib/viu";
 import {
@@ -79,7 +82,7 @@ import {
 } from "./src/lib/data";
 import { connectMongo, closeMongo } from "./src/lib/mongo";
 import { initFromMongo } from "./src/lib/data";
-import { VIU_ORIGIN, VIU_REFERER, USER_AGENT, DRM_USER_AGENT, UPSTREAM_CATEGORY_IDS, VOD_PACKAGES } from "./src/lib/constants";
+import { VIU_ORIGIN, VIU_REFERER, USER_AGENT, DRM_USER_AGENT, FP_DRM_USER_AGENT, FP_CERT_URL, UPSTREAM_CATEGORY_IDS, VOD_PACKAGES } from "./src/lib/constants";
 
 const dev = process.env.NODE_ENV !== "production";
 const PORT = parseInt(process.env.PORT || "3009", 10);
@@ -1013,12 +1016,24 @@ async function refreshEpgFile() {
 // ================================================================
 // STREAM RESPONSE HELPER
 // ================================================================
+function extractAssetId(realPath: string): string {
+  const match = realPath.match(/\/bpk-tv\/([^/]+)\/out\//);
+  if (match) return match[1];
+  const vodMatch = realPath.match(/\/bpk-vod\/[^/]+\/output\/([^/]+)\//);
+  if (vodMatch) return vodMatch[1];
+  return "";
+}
+
 function issueStreamResponse(kind: string, licenseKind: string, realPath: string, deviceUid?: string) {
   const streamToken = encryptStreamPath(realPath, STREAM_TOKEN_TTL_MS);
-  const drmToken = signDrmToken(licenseKind, DRM_LICENSE_TTL_MS, deviceUid);
+  const wvToken = signDrmToken(licenseKind, DRM_LICENSE_TTL_MS, deviceUid, "wv");
+  const assetId = extractAssetId(realPath);
+  const fpToken = signDrmToken(licenseKind, DRM_LICENSE_TTL_MS, deviceUid, "fp", assetId);
   return {
     url: `/api/stream/t/${streamToken}`,
-    license: `/api/drm/${drmToken}`,
+    license: `/api/drm/${wvToken}`,
+    licenseWv: `/api/drm/${wvToken}`,
+    licenseFp: `/api/drm/${fpToken}`,
     licenseExpires: Date.now() + DRM_LICENSE_TTL_MS,
     streamExpires: Date.now() + STREAM_TOKEN_TTL_MS,
     isLive: kind === "live" || kind === "catchup",
@@ -1154,7 +1169,58 @@ async function refreshDeviceLicenseUrls(deviceUid: string): Promise<void> {
   } catch {}
 }
 
-function saveLoginTokens(device: LoginDevice, loginData: Record<string, unknown>, mobileNumber: string | null) {
+const _fpDeviceRefreshLocks = new Map<string, Promise<string>>();
+
+async function ensureFairPlayAccessToken(deviceUid: string): Promise<string | null> {
+  const latest = loadLatestTokens(deviceUid);
+  if (!latest?.fp_access_token) return null;
+  const now = Date.now();
+  const fpExpiresValid = latest.fp_expires_at ? now < (Number(latest.fp_expires_at) - REFRESH_BUFFER_MS) : false;
+  if (fpExpiresValid) return latest.fp_access_token as string;
+  const fpRefreshValid = latest.fp_refresh_expires_at ? now < (Number(latest.fp_refresh_expires_at) - REFRESH_BUFFER_MS) : false;
+  if (!fpRefreshValid) return null;
+
+  const existing = _fpDeviceRefreshLocks.get(deviceUid);
+  if (existing) return existing;
+
+  const promise = (async () => {
+    try {
+      const result = await refreshDeviceTokens(
+        latest.fp_access_token as string,
+        latest.fp_refresh_token as string
+      );
+      if (!result) return latest.fp_access_token as string;
+      const expiresAt = now + result.expires_in;
+      let refreshExpiresAt: number | null = null;
+      try {
+        const payload = JSON.parse(Buffer.from(String(result.refresh_token).split(".")[1], "base64").toString());
+        if (payload.exp) refreshExpiresAt = payload.exp * 1000;
+      } catch {}
+      const store = loadTokensStore();
+      const arr = store[deviceUid] as Array<Record<string, unknown>> | undefined;
+      if (arr && arr.length > 0) {
+        const last = arr[arr.length - 1];
+        last.fp_access_token = result.access_token;
+        last.fp_refresh_token = result.refresh_token;
+        last.fp_expires_at = expiresAt;
+        last.fp_refresh_expires_at = refreshExpiresAt;
+        last.captured_at = new Date().toISOString();
+        saveTokensStore(store);
+        log(`[auth] FP token refreshed for ${deviceUid.slice(0, 8)}… valid ${Math.round((expiresAt - now) / 60000)}min`);
+      }
+      return result.access_token;
+    } catch (e) {
+      log(`[auth] FP refresh failed for ${deviceUid.slice(0, 8)}: ${(e as Error).message}`);
+      return latest.fp_access_token as string;
+    } finally {
+      _fpDeviceRefreshLocks.delete(deviceUid);
+    }
+  })();
+  _fpDeviceRefreshLocks.set(deviceUid, promise);
+  return promise;
+}
+
+function saveLoginTokens(device: LoginDevice, loginData: Record<string, unknown>, mobileNumber: string | null, fpLoginData?: Record<string, unknown>) {
   const d = (loginData.data || loginData) as Record<string, unknown>;
   if (!d?.access_token) return null;
 
@@ -1178,7 +1244,7 @@ function saveLoginTokens(device: LoginDevice, loginData: Record<string, unknown>
     }
   } catch {}
 
-  const record = {
+  const record: Record<string, unknown> = {
     deviceUid: device.deviceUid,
     mobileNumber: resolvedMobile,
     access_token: d.access_token,
@@ -1197,51 +1263,103 @@ function saveLoginTokens(device: LoginDevice, loginData: Record<string, unknown>
     captured_at: new Date().toISOString(),
   };
 
+  // Save FairPlay tokens from IOS login response
+  if (fpLoginData) {
+    const fp = (fpLoginData.data || fpLoginData) as Record<string, unknown>;
+    if (fp?.access_token) {
+      const fpExpiresInMs = parseInt(String(fp.expires_in || 0), 10);
+      let fpRefreshExpiresAt: number | null = null;
+      try {
+        if (fp.refresh_token) {
+          const payload = JSON.parse(Buffer.from(String(fp.refresh_token).split(".")[1], "base64").toString());
+          if (payload.exp) fpRefreshExpiresAt = payload.exp * 1000;
+        }
+      } catch {}
+      record.fp_access_token = fp.access_token;
+      record.fp_refresh_token = fp.refresh_token || "";
+      record.fp_expires_at = now + fpExpiresInMs;
+      record.fp_refresh_expires_at = fpRefreshExpiresAt;
+      record.fp_user_id = fp.user_id || 0;
+      record.fp_device_id = fp.device_id || 0;
+      log(`[auth] FP tokens saved for ${device.deviceUid.slice(0, 8)}…`);
+    }
+  }
+
   const store = loadTokensStore();
   store[device.deviceUid] = [record];
   saveTokensStore(store);
 
-  // Fetch wv_license_proxy_url_live + wv_license_proxy_url_vod in background
   const accessTokenStr = String(d.access_token);
   const userIdStr = String(d.user_id || "918558");
-  Promise.all([
+
+  // Fire WV + FP license URL fetches in parallel
+  const fpAccessToken = record.fp_access_token as string | undefined;
+  const wvFetches = Promise.all([
     fetchWvLicenseProxyUrlLive(accessTokenStr, userIdStr),
     fetchWvLicenseProxyUrlVod(accessTokenStr, "23145", userIdStr),
-  ]).then(([liveUrl, vodUrl]) => {
-    if (liveUrl || vodUrl) {
-      const store2 = loadTokensStore();
-      const entries = store2[device.deviceUid];
-      if (Array.isArray(entries) && entries.length > 0) {
-        if (liveUrl) entries[entries.length - 1].wv_license_proxy_url_live = liveUrl;
-        if (vodUrl) entries[entries.length - 1].wv_license_proxy_url_vod = vodUrl;
-        saveTokensStore(store2);
-        log(`[auth] wv_license_proxy_url saved (live=${!!liveUrl} vod=${!!vodUrl}) for ${device.deviceUid.slice(0, 8)}…`);
-      }
+  ]);
+  const fpFetches = fpAccessToken
+    ? Promise.all([
+        fetchFairPlayLicenseUrlLive(fpAccessToken, userIdStr),
+        fetchFairPlayLicenseUrlVod(fpAccessToken, "23145", userIdStr),
+      ])
+    : Promise.resolve([null, null] as const);
+
+  Promise.all([wvFetches, fpFetches]).then(([[wvLive, wvVod], [fpLive, fpVod]]) => {
+    const store2 = loadTokensStore();
+    const entries = store2[device.deviceUid];
+    if (Array.isArray(entries) && entries.length > 0) {
+      const last = entries[entries.length - 1];
+      if (wvLive) last.wv_license_proxy_url_live = wvLive;
+      if (wvVod) last.wv_license_proxy_url_vod = wvVod;
+      if (fpLive?.fp_license_proxy_url) last.fp_license_proxy_url_live = fpLive.fp_license_proxy_url;
+      if (fpVod?.fp_license_proxy_url) last.fp_license_proxy_url_vod = fpVod.fp_license_proxy_url;
+      saveTokensStore(store2);
+      log(`[auth] license URLs saved (wv=${!!wvLive}/${!!wvVod} fp=${!!(fpLive?.fp_license_proxy_url)}/${!!(fpVod?.fp_license_proxy_url)}) for ${device.deviceUid.slice(0, 8)}…`);
+    }
+  }).catch(() => {});
+
+  // Also save user devices
+  fetchViuDevices(accessTokenStr, userIdStr).then((devices) => {
+    if (devices) {
+      try {
+        const { col } = require("./src/lib/mongo");
+        col("user_devices").updateOne({ _id: device.deviceUid }, { $set: { _id: device.deviceUid, devices, updatedAt: new Date().toISOString() } }, { upsert: true });
+      } catch {}
     }
   }).catch(() => {});
 
   return record;
 }
 
-async function finalLogin(device: LoginDevice): Promise<{ status: number; data: Record<string, unknown> }> {
-  const url = "https://api.viu.lk/api/client/v2/global/login";
-  const body = {
+async function finalLogin(device: LoginDevice): Promise<{ status: number; data: Record<string, unknown>; fpData?: Record<string, unknown> }> {
+  const wvBody = {
     login_type: device.loginType || "WebOS",
     device: device.deviceUid,
     device_class: device.deviceClass || "SMART_TV",
     device_type: device.deviceType || "LG SmartTV",
     device_os: device.deviceOS || "WEBOS",
   };
-  return fetchOtpLogin(body);
+  const fpBody = {
+    login_type: "Mac",
+    device: device.deviceUid,
+    device_class: "SMART_TV",
+    device_type: "Other model placeholder",
+    device_os: "IOS",
+  };
+  const [wvRes, fpRes] = await Promise.all([
+    fetchOtpLogin(wvBody),
+    fetchOtpLogin(fpBody).catch(() => ({ status: 0, data: {} })),
+  ]);
+  return { status: wvRes.status, data: wvRes.data, fpData: fpRes.status === 200 ? fpRes.data : undefined };
 }
 
 async function otpLoginViu(params: {
   mobile: string;
   otpCode: string;
   device: LoginDevice;
-}): Promise<{ status: number; data: Record<string, unknown> }> {
-  const url = "https://api.viu.lk/api/client/v2/global/login";
-  const body = {
+}): Promise<{ status: number; data: Record<string, unknown>; fpData?: Record<string, unknown> }> {
+  const wvBody = {
     login_type: "OTP_LOGIN",
     username: params.mobile,
     otp_code: params.otpCode,
@@ -1250,7 +1368,20 @@ async function otpLoginViu(params: {
     device_type: params.device.deviceType || "LG SmartTV",
     device_os: params.device.deviceOS || "WEBOS",
   };
-  return fetchOtpLogin(body);
+  const fpBody = {
+    login_type: "Mac",
+    username: params.mobile,
+    otp_code: params.otpCode,
+    device: params.device.deviceUid,
+    device_class: "SMART_TV",
+    device_type: "Other model placeholder",
+    device_os: "IOS",
+  };
+  const [wvRes, fpRes] = await Promise.all([
+    fetchOtpLogin(wvBody),
+    fetchOtpLogin(fpBody).catch(() => ({ status: 0, data: {} })),
+  ]);
+  return { status: wvRes.status, data: wvRes.data, fpData: fpRes.status === 200 ? fpRes.data : undefined };
 }
 
 // ================================================================
@@ -1533,6 +1664,11 @@ expressApp.use((req, res, next) => {
 // ── HEALTH CHECK ────────────────────────────────────────────
 expressApp.get("/api/health", (_req, res) => { res.json({ ok: true, uptime: Math.round(process.uptime()) }); });
 
+// FairPlay SPC certificate
+expressApp.get("/cert", (_req, res) => {
+  res.sendFile(path.join(process.cwd(), "public", "cert"));
+});
+
 // ── AUTH ROUTES ───────────────────────────────────────────────
 expressApp.get("/api/auth/state", (req, res) => {
   const deviceUid = req.headers["x-device-uid"] as string;
@@ -1583,7 +1719,7 @@ expressApp.post("/api/auth/auto-login", (req, res) => {
     finalLogin(device)
       .then((r) => {
         if (r.status === 200 && (r.data?.data as Record<string, unknown>)?.access_token) {
-          saveLoginTokens(device, r.data, saved?.mobileNumber as string | null);
+          saveLoginTokens(device, r.data, saved?.mobileNumber as string | null, r.fpData);
           return res.json({ ok: true, signedIn: true, mobileNumber: maskedMobile, refreshed: true });
         }
         return res.status(401).json({ ok: false, reason: "refresh_failed" });
@@ -1685,7 +1821,7 @@ expressApp.post("/api/auth/verify-otp", async (req, res) => {
     }
 
     if (r.status === 200 && (r.data?.data as Record<string, unknown>)?.access_token) {
-      saveLoginTokens(device, r.data, check.number!);
+      saveLoginTokens(device, r.data, check.number!, r.fpData);
       device.lastUsedAt = new Date().toISOString();
       saveDevice(device as unknown as Record<string, unknown>);
 
@@ -2294,78 +2430,79 @@ expressApp.all("/api/drm/:token", (req, res) => {
       ? (req as any)._rawDrmBody
       : Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
 
+    const isFairPlay = info.drmType === "fp";
     const deviceUid = info.deviceUid || "";
     const latest = loadLatestTokens(deviceUid);
-    const storedLicenseUrl = info.kind === "tv"
-      ? (latest?.wv_license_proxy_url_live as string) || null
-      : (latest?.wv_license_proxy_url_vod as string) || null;
 
-    if (storedLicenseUrl && latest?.access_token && isAccessTokenValid(latest)) {
-      const parsed = new URL(storedLicenseUrl);
-      log(`[drm] proxying (cached) to ${parsed.hostname} kind=${info.kind} body=${body.length}b`);
+    // Helper: proxy FairPlay license request
+    function proxyFairPlay(licenseUrl: string, accessToken: string) {
+      const spcB64 = body.toString("base64");
+      const jsonBody = JSON.stringify({ spc: spcB64, assetId: info.assetId || "" });
+      const parsed = new URL(licenseUrl);
+      log(`[drm-fp] proxying to ${parsed.hostname} kind=${info.kind} assetId=${info.assetId} body=${body.length}b`);
       const opts: https.RequestOptions = {
         method: "POST", hostname: parsed.hostname, port: 443,
         path: parsed.pathname + parsed.search,
         headers: {
-          "user-agent": DRM_USER_AGENT, "content-type": "application/octet-stream",
-          accept: "*/*", authorization: `Bearer ${latest.access_token}`,
-          connection: "close", "content-length": body.length,
+          "user-agent": FP_DRM_USER_AGENT, "content-type": "application/json",
+          accept: "*/*", authorization: `Bearer ${accessToken}`,
+          connection: "close", "content-length": Buffer.byteLength(jsonBody),
         },
       };
       const pr = https.request(opts, (pres) => {
-        log(`[drm] upstream → ${pres.statusCode}`);
-        res.writeHead(pres.statusCode || 500, {
-          ...pres.headers,
-          "access-control-allow-origin": "*",
-          "access-control-allow-headers": "*",
-          "access-control-expose-headers": "*",
+        const chunks: Buffer[] = [];
+        pres.on("data", (c: Buffer) => chunks.push(c));
+        pres.on("end", () => {
+          log(`[drm-fp] upstream → ${pres.statusCode} ${chunks.length}b`);
+          if (pres.statusCode && pres.statusCode >= 200 && pres.statusCode < 300) {
+            const raw = Buffer.concat(chunks);
+            let ckcBytes = raw;
+            try {
+              const text = raw.toString("utf8");
+              if (text.trimStart().startsWith("{")) {
+                const parsed = JSON.parse(text);
+                const ckcField = parsed.ckc || parsed.CKC || parsed.license || parsed.License || parsed.contentKeyContext || parsed.payload;
+                if (typeof ckcField === "string" && ckcField.length > 0) {
+                  ckcBytes = Buffer.from(ckcField, "base64");
+                  log(`[drm-fp] extracted CKC: ${ckcBytes.length}b from JSON field`);
+                } else {
+                  for (const [k, v] of Object.entries(parsed)) {
+                    if (typeof v === "string" && v.length > 100) {
+                      ckcBytes = Buffer.from(v, "base64");
+                      log(`[drm-fp] extracted CKC: ${ckcBytes.length}b from field "${k}"`);
+                      break;
+                    }
+                  }
+                }
+              }
+            } catch {}
+            res.writeHead(200, {
+              "content-type": "application/octet-stream",
+              "content-length": ckcBytes.length,
+              "access-control-allow-origin": "*",
+              "access-control-allow-headers": "*",
+              "access-control-expose-headers": "*",
+            });
+            res.end(ckcBytes);
+          } else {
+            res.writeHead(pres.statusCode || 502, {
+              ...pres.headers,
+              "access-control-allow-origin": "*",
+              "access-control-allow-headers": "*",
+              "access-control-expose-headers": "*",
+            });
+            pres.pipe(res);
+          }
         });
-        pres.pipe(res);
       });
-      pr.on("error", (e) => { log("[drm] upstream error:", e.message); if (!res.headersSent) res.status(502).json({ error: "drm fail" }); });
-      pr.end(body);
-      return;
+      pr.on("error", (e) => { log("[drm-fp] upstream error:", e.message); if (!res.headersSent) res.status(502).json({ error: "drm fail" }); });
+      pr.end(jsonBody);
     }
 
-    if (!deviceUid) {
-      log("[drm] no deviceUid in token");
-      return res.status(403).json({ error: "no device" });
-    }
-
-    ensureDeviceAccessToken(deviceUid).then(async (accessToken) => {
-      if (!accessToken) {
-        log("[drm] no access token for", deviceUid.slice(0, 8));
-        return res.status(502).json({ error: "no access token" });
-      }
-      const updated = loadLatestTokens(deviceUid);
-      const userId = String(updated?.user_id || "918558");
-
-      // Re-fetch license URL with the new access token — lat is tied to the token
-      const fetchFn = info.kind === "tv" ? fetchWvLicenseProxyUrlLive : fetchWvLicenseProxyUrlVod;
-      let licenseUrl = await fetchFn(accessToken, userId);
-      if (!licenseUrl) {
-        const fallbackFn = info.kind === "tv" ? fetchWvLicenseProxyUrlVod : fetchWvLicenseProxyUrlLive;
-        licenseUrl = await fallbackFn(accessToken, "23145", userId);
-      }
-
-      // Update stored license URL for future cached requests
-      if (licenseUrl && updated) {
-        const store = loadTokensStore();
-        const arr = store[deviceUid] as Array<Record<string, unknown>> | undefined;
-        if (arr && arr.length > 0) {
-          if (info.kind === "tv") arr[arr.length - 1].wv_license_proxy_url_live = licenseUrl;
-          else arr[arr.length - 1].wv_license_proxy_url_vod = licenseUrl;
-          saveTokensStore(store);
-        }
-      }
-
-      if (!licenseUrl) {
-        log("[drm] no license url for", deviceUid.slice(0, 8));
-        return res.status(502).json({ error: "no license url" });
-      }
-
+    // Helper: proxy Widevine license request
+    function proxyWidevine(licenseUrl: string, accessToken: string) {
       const parsed = new URL(licenseUrl);
-      log(`[drm] proxying (refreshed) to ${parsed.hostname} kind=${info.kind} body=${body.length}b`);
+      log(`[drm-wv] proxying to ${parsed.hostname} kind=${info.kind} body=${body.length}b`);
       const opts: https.RequestOptions = {
         method: "POST", hostname: parsed.hostname, port: 443,
         path: parsed.pathname + parsed.search,
@@ -2376,7 +2513,7 @@ expressApp.all("/api/drm/:token", (req, res) => {
         },
       };
       const pr = https.request(opts, (pres) => {
-        log(`[drm] upstream → ${pres.statusCode}`);
+        log(`[drm-wv] upstream → ${pres.statusCode}`);
         res.writeHead(pres.statusCode || 500, {
           ...pres.headers,
           "access-control-allow-origin": "*",
@@ -2385,8 +2522,89 @@ expressApp.all("/api/drm/:token", (req, res) => {
         });
         pres.pipe(res);
       });
-      pr.on("error", (e) => { log("[drm] upstream error:", e.message); if (!res.headersSent) res.status(502).json({ error: "drm fail" }); });
+      pr.on("error", (e) => { log("[drm-wv] upstream error:", e.message); if (!res.headersSent) res.status(502).json({ error: "drm fail" }); });
       pr.end(body);
+    }
+
+    // Determine license URL based on DRM type
+    if (isFairPlay) {
+      const storedLicenseUrl = info.kind === "tv"
+        ? (latest?.fp_license_proxy_url_live as string) || null
+        : (latest?.fp_license_proxy_url_vod as string) || null;
+      const fpAccessToken = latest?.fp_access_token as string | undefined;
+
+      if (storedLicenseUrl && fpAccessToken && isAccessTokenValid(latest!)) {
+        proxyFairPlay(storedLicenseUrl, fpAccessToken);
+        return;
+      }
+
+      if (!deviceUid) return res.status(403).json({ error: "no device" });
+
+      // Need to get FP access token
+      ensureFairPlayAccessToken(deviceUid).then(async (fpToken) => {
+        if (!fpToken) return res.status(502).json({ error: "no fp access token" });
+        const updated = loadLatestTokens(deviceUid);
+        const userId = String(updated?.fp_user_id || updated?.user_id || "918558");
+
+        const fetchFn = info.kind === "tv" ? fetchFairPlayLicenseUrlLive : fetchFairPlayLicenseUrlVod;
+        const result = await fetchFn(fpToken, userId);
+        let licenseUrl = result.fp_license_proxy_url;
+
+        if (licenseUrl && updated) {
+          const store = loadTokensStore();
+          const arr = store[deviceUid] as Array<Record<string, unknown>> | undefined;
+          if (arr && arr.length > 0) {
+            if (info.kind === "tv") arr[arr.length - 1].fp_license_proxy_url_live = licenseUrl;
+            else arr[arr.length - 1].fp_license_proxy_url_vod = licenseUrl;
+            saveTokensStore(store);
+          }
+        }
+
+        if (!licenseUrl) return res.status(502).json({ error: "no fp license url" });
+        proxyFairPlay(licenseUrl, fpToken);
+      }).catch((err) => {
+        log("[drm-fp] error:", err?.message || err);
+        if (!res.headersSent) res.status(502).json({ error: "drm error" });
+      });
+      return;
+    }
+
+    // Widevine path (existing logic)
+    const storedLicenseUrl = info.kind === "tv"
+      ? (latest?.wv_license_proxy_url_live as string) || null
+      : (latest?.wv_license_proxy_url_vod as string) || null;
+
+    if (storedLicenseUrl && latest?.access_token && isAccessTokenValid(latest)) {
+      proxyWidevine(storedLicenseUrl, latest.access_token as string);
+      return;
+    }
+
+    if (!deviceUid) return res.status(403).json({ error: "no device" });
+
+    ensureDeviceAccessToken(deviceUid).then(async (accessToken) => {
+      if (!accessToken) return res.status(502).json({ error: "no access token" });
+      const updated = loadLatestTokens(deviceUid);
+      const userId = String(updated?.user_id || "918558");
+
+      const fetchFn = info.kind === "tv" ? fetchWvLicenseProxyUrlLive : fetchWvLicenseProxyUrlVod;
+      let licenseUrl = await fetchFn(accessToken, userId);
+      if (!licenseUrl) {
+        const fallbackFn = info.kind === "tv" ? fetchWvLicenseProxyUrlVod : fetchWvLicenseProxyUrlLive;
+        licenseUrl = await fallbackFn(accessToken, "23145", userId);
+      }
+
+      if (licenseUrl && updated) {
+        const store = loadTokensStore();
+        const arr = store[deviceUid] as Array<Record<string, unknown>> | undefined;
+        if (arr && arr.length > 0) {
+          if (info.kind === "tv") arr[arr.length - 1].wv_license_proxy_url_live = licenseUrl;
+          else arr[arr.length - 1].wv_license_proxy_url_vod = licenseUrl;
+          saveTokensStore(store);
+        }
+      }
+
+      if (!licenseUrl) return res.status(502).json({ error: "no license url" });
+      proxyWidevine(licenseUrl, accessToken);
     }).catch((err) => {
       log("[drm] error:", err?.message || err);
       if (!res.headersSent) res.status(502).json({ error: "drm error" });
@@ -3171,7 +3389,7 @@ async function main() {
     const deviceUids = Object.keys(store);
     if (deviceUids.length === 0) return;
     log(`[bg-refresh] Checking ${deviceUids.length} devices…`);
-    let refreshed = 0, failed = 0, skipped = 0;
+    let refreshed = 0, fpRefreshed = 0, failed = 0, skipped = 0;
     const now = Date.now();
     for (const uid of deviceUids) {
       const arr = store[uid] as Array<Record<string, unknown>> | undefined;
@@ -3203,13 +3421,45 @@ async function main() {
         latest.refresh_expires_at = refreshExpiresNew;
         latest.captured_at = new Date().toISOString();
         refreshed++;
-        log(`[bg-refresh] ${uid.slice(0, 8)}… ✅ refreshed (${Math.round(daysLeft)}d left)`);
+        log(`[bg-refresh] ${uid.slice(0, 8)}… ✅ WV refreshed (${Math.round(daysLeft)}d left)`);
       } catch (e) {
         failed++;
         log(`[bg-refresh] ${uid.slice(0, 8)}… ❌ ${(e as Error).message}`);
       }
+
+      // Also refresh FairPlay tokens
+      if (latest.fp_refresh_token && latest.fp_access_token) {
+        const fpRefreshExpiresAt = Number(latest.fp_refresh_expires_at || 0);
+        if (fpRefreshExpiresAt > 0) {
+          const fpDaysLeft = (fpRefreshExpiresAt - now) / (24 * 60 * 60 * 1000);
+          if (fpDaysLeft <= 15 && fpDaysLeft > 0) {
+            try {
+              const fpResult = await refreshDeviceTokens(
+                latest.fp_access_token as string,
+                latest.fp_refresh_token as string
+              );
+              if (fpResult) {
+                const fpExpiresAt = now + fpResult.expires_in;
+                let fpRefreshExpiresNew: number | null = null;
+                try {
+                  const payload = JSON.parse(Buffer.from(String(fpResult.refresh_token).split(".")[1], "base64").toString());
+                  if (payload.exp) fpRefreshExpiresNew = payload.exp * 1000;
+                } catch {}
+                latest.fp_access_token = fpResult.access_token;
+                latest.fp_refresh_token = fpResult.refresh_token;
+                latest.fp_expires_at = fpExpiresAt;
+                latest.fp_refresh_expires_at = fpRefreshExpiresNew;
+                fpRefreshed++;
+                log(`[bg-refresh] ${uid.slice(0, 8)}… ✅ FP refreshed`);
+              }
+            } catch (e) {
+              log(`[bg-refresh] ${uid.slice(0, 8)}… ❌ FP: ${(e as Error).message}`);
+            }
+          }
+        }
+      }
     }
-    log(`[bg-refresh] Done: ${refreshed} refreshed, ${failed} failed, ${skipped} skipped`);
+    log(`[bg-refresh] Done: ${refreshed} WV, ${fpRefreshed} FP refreshed, ${failed} failed, ${skipped} skipped`);
     try { saveTokensStore(store); } catch {}
   }
 
@@ -3240,10 +3490,29 @@ async function main() {
         if (liveUrl) latest.wv_license_proxy_url_live = liveUrl;
         if (vodUrl) latest.wv_license_proxy_url_vod = vodUrl;
         updated++;
-        log(`[bg-license] ${uid.slice(0, 8)}… ✅ updated`);
+        log(`[bg-license] ${uid.slice(0, 8)}… ✅ WV updated`);
       } catch (e) {
         failed++;
         log(`[bg-license] ${uid.slice(0, 8)}… ❌ ${(e as Error).message}`);
+      }
+
+      // Also refresh FairPlay license URLs
+      if (latest.fp_access_token) {
+        const fpAccessValid = latest.fp_expires_at ? Date.now() < (Number(latest.fp_expires_at) - REFRESH_BUFFER_MS) : false;
+        if (fpAccessValid) {
+          try {
+            const fpUserId = String(latest.fp_user_id || latest.user_id || "918558");
+            const [fpLive, fpVod] = await Promise.all([
+              fetchFairPlayLicenseUrlLive(latest.fp_access_token as string, fpUserId),
+              fetchFairPlayLicenseUrlVod(latest.fp_access_token as string, "23145", fpUserId),
+            ]);
+            if (fpLive?.fp_license_proxy_url) latest.fp_license_proxy_url_live = fpLive.fp_license_proxy_url;
+            if (fpVod?.fp_license_proxy_url) latest.fp_license_proxy_url_vod = fpVod.fp_license_proxy_url;
+            log(`[bg-license] ${uid.slice(0, 8)}… ✅ FP updated`);
+          } catch (e) {
+            log(`[bg-license] ${uid.slice(0, 8)}… ❌ FP: ${(e as Error).message}`);
+          }
+        }
       }
     }
     log(`[bg-license] Done: ${updated} updated, ${failed} failed`);
@@ -3288,18 +3557,7 @@ async function main() {
   cleanupPsshCache();
 
   // ── Boot: listen FIRST, then hydrate + fetch data ────────
-  // 1) Connect MongoDB + hydrate in-memory cache
-  try {
-    await connectMongo();
-    await initFromMongo();
-    log("[boot] MongoDB hydrated");
-  } catch (e) {
-    log("[boot] MongoDB connection failed — using file fallback:", (e as Error).message);
-  }
-
-  loadTokens();
-
-  // 2) Start listening immediately so healthcheck passes
+  // 1) Start listening immediately so healthcheck passes
   server.listen(PORT, "0.0.0.0", () => {
     console.log("");
     console.log("  ┌───────────────────────────────────────────────────────────┐");
@@ -3313,6 +3571,17 @@ async function main() {
     console.log("  └───────────────────────────────────────────────────────────┘");
     console.log("");
   });
+
+  // 2) Connect MongoDB + hydrate in-memory cache (async, non-blocking)
+  try {
+    await connectMongo();
+    await initFromMongo();
+    log("[boot] MongoDB hydrated");
+  } catch (e) {
+    log("[boot] MongoDB connection failed — using file fallback:", (e as Error).message);
+  }
+
+  loadTokens();
 
   // 3) Fetch missing data in background (after server is listening)
   (async () => {
