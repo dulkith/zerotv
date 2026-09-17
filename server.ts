@@ -366,6 +366,7 @@ class TTLCache {
   }
 }
 const mpdCache = new TTLCache(200);
+const m3u8Cache = new TTLCache(200);
 
 // ================================================================
 // PSSH CACHE
@@ -551,6 +552,18 @@ function rewriteBaseUrl(xml: string, newBase: string): string {
   if (!newBase) return xml;
   if (/<BaseURL>/.test(xml)) return xml.replace(/<BaseURL>[\s\S]*?<\/BaseURL>/, `<BaseURL>${newBase}</BaseURL>`);
   return xml.replace(/<MPD\b[^>]*>/, (m) => m + `<BaseURL>${newBase}</BaseURL>`);
+}
+
+function rewriteM3u8Urls(m3u8: string, cdnBase: string): string {
+  const lines = m3u8.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line || line.startsWith("#")) continue;
+    if (/^https?:\/\//i.test(line)) continue;
+    const resolved = new URL(line, cdnBase).toString();
+    lines[i] = applyCdn(resolved);
+  }
+  return lines.join("\n");
 }
 
 function extractBeginFromUrl(url: string): string | null {
@@ -1029,8 +1042,11 @@ function issueStreamResponse(kind: string, licenseKind: string, realPath: string
   const wvToken = signDrmToken(licenseKind, DRM_LICENSE_TTL_MS, deviceUid, "wv");
   const assetId = extractAssetId(realPath);
   const fpToken = signDrmToken(licenseKind, DRM_LICENSE_TTL_MS, deviceUid, "fp", assetId);
+  const hlsPath = realPath.replace(/\.mpd$/i, ".m3u8");
+  const hlsToken = encryptStreamPath(hlsPath, STREAM_TOKEN_TTL_MS);
   return {
     url: `/api/stream/t/${streamToken}`,
+    hlsUrl: `/api/stream/t/${hlsToken}`,
     license: `/api/drm/${wvToken}`,
     licenseWv: `/api/drm/${wvToken}`,
     licenseFp: `/api/drm/${fpToken}`,
@@ -1341,9 +1357,9 @@ async function finalLogin(device: LoginDevice): Promise<{ status: number; data: 
     device_os: device.deviceOS || "WEBOS",
   };
   const fpBody = {
-    login_type: "Mac",
+    login_type: "iPhone",
     device: device.deviceUid,
-    device_class: "SMART_TV",
+    device_class: "MOBILE",
     device_type: "Other model placeholder",
     device_os: "IOS",
   };
@@ -1369,7 +1385,7 @@ async function otpLoginViu(params: {
     device_os: params.device.deviceOS || "WEBOS",
   };
   const fpBody = {
-    login_type: "Mac",
+    login_type: "iPhone",
     username: params.mobile,
     otp_code: params.otpCode,
     device: params.device.deviceUid,
@@ -2238,10 +2254,66 @@ expressApp.all("/api/stream/t/:token", async (req, res) => {
 
     const restPath = rest.split("?")[0];
     const isMpdRequest = restPath.endsWith(".mpd");
+    const isM3u8Request = restPath.endsWith(".m3u8");
     const isVod = rest.includes("/bpk-vod/");
     const isCatchup = !!(extractBeginFromUrl(rest) || extractEndFromUrl(rest));
     const isLive = !isCatchup && !isVod;
     const isBpkToken = rest.includes("/bpk-token/");
+
+    // ── M3U8 (HLS) handling ────────────────────────────────
+    if (isM3u8Request) {
+      const cachedM3u8 = m3u8Cache.get(req.url);
+      if (cachedM3u8) {
+        res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader("Cache-Control", "no-cache");
+        return res.send(cachedM3u8);
+      }
+      const originalUrl = `https://${host}${rest}`;
+      let resolved: { finalUrl: string; httpStatus: number; hops: number; contentType: string } | null = null;
+      if (pickClient()) {
+        try {
+          SOCKET_STATS.totalDelegateResolves++;
+          resolved = await delegateResolve(originalUrl, SOCKET_RESOLVE_TIMEOUT_MS);
+        } catch {}
+      }
+      if (!resolved && SERVER_FALLBACK_RESOLVE) {
+        try {
+          const r = await serverResolve(originalUrl);
+          resolved = { finalUrl: r.url, httpStatus: r.statusCode, hops: 1, contentType: "" };
+        } catch {}
+      } else if (!resolved && !SERVER_FALLBACK_RESOLVE) {
+        return res.status(503).json({ error: "no resolver" });
+      }
+      if (!resolved) return res.status(502).json({ error: "resolve failed" });
+
+      const cdnUrl = applyCdn(resolved.finalUrl);
+      const u2 = new URL(cdnUrl);
+      const up = await httpsRequestFollow({
+        method: "GET",
+        hostname: u2.hostname,
+        path: u2.pathname + u2.search,
+        headers: {
+          origin: VIU_ORIGIN,
+          referer: VIU_REFERER,
+          "user-agent": USER_AGENT,
+          accept: "*/*",
+        },
+      });
+      if (up.statusCode !== 200) {
+        res.status(up.statusCode);
+        return res.send(up.body);
+      }
+      let m3u8 = (up.body || Buffer.from("")).toString("utf8");
+      const cdnBase = cdnUrl.replace(/\/[^/]*$/, "/");
+      m3u8 = rewriteM3u8Urls(m3u8, cdnBase);
+      const ttl = isCatchup ? LIVE_MPD_CACHE_TTL_MS : VOD_MPD_CACHE_TTL_MS;
+      m3u8Cache.set(req.url, m3u8, ttl);
+      res.status(200).setHeader("Content-Type", "application/vnd.apple.mpegurl");
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Cache-Control", "no-cache");
+      return res.send(m3u8);
+    }
 
     if (!isMpdRequest) {
       if (isBpkToken || !MPD_PROXY) {
@@ -2802,7 +2874,7 @@ expressApp.get("/admin/health", adminAuthMiddleware, (req, res) => {
   res.json({
     ok: true,
     server: { uptimeSec: Math.round(process.uptime()), nodeVersion: process.version, now: new Date().toISOString() },
-    caches: { mpd: mpdCache.size, pssh: Object.keys(psshCache).length, uid: Object.keys(UID_MAP.forward).length, episodes: EPISODE_CM_CACHE.size },
+    caches: { mpd: mpdCache.size, m3u8: m3u8Cache.size, pssh: Object.keys(psshCache).length, uid: Object.keys(UID_MAP.forward).length, episodes: EPISODE_CM_CACHE.size },
     tokens: { hasAccess: !!tokens.access, hasRefresh: !!tokens.refresh, minutesLeft: tokens.expiresAt ? Math.round((tokens.expiresAt - Date.now()) / 60000) : 0 },
     counts: { channels, categories: cats.length, movies: totalMovies, series: totalSeries },
     epg: epgData,
