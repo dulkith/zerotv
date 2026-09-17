@@ -3165,58 +3165,7 @@ async function main() {
     });
   });
 
-  // Boot
-  // 1) Connect MongoDB + hydrate in-memory cache
-  try {
-    await connectMongo();
-    await initFromMongo();
-    log("[boot] MongoDB hydrated");
-  } catch (e) {
-    log("[boot] MongoDB connection failed — using file fallback:", (e as Error).message);
-  }
-
-  loadTokens();
-
-  // Boot data — check both MongoDB (in-memory) and disk files
-  const needChannels = !loadChannels();
-  const needCats = !loadCategoriesIndex();
-  const needEpg = !fs.existsSync(EPG_XML_FILE);
-  if (needChannels || needCats) {
-    log("[boot] Missing data — fetching…");
-    try {
-      await runAutoRefresh();
-    } catch (e) {
-      log("[boot] failed:", (e as Error).message);
-    }
-  } else if (needEpg) {
-    log("[boot] EPG missing — building…");
-    try {
-      await refreshEpgFile();
-    } catch (e) {
-      log("[boot] failed:", (e as Error).message);
-    }
-  } else {
-    log("[boot] All data files present");
-  }
-
-  const n = indexAllEpisodesFromDisk();
-  log(`[boot] Indexed ${n} episodes from disk`);
-
-  // Start intervals
-  if (AUTO_REFRESH_MINUTES > 0) setInterval(runAutoRefresh, AUTO_REFRESH_MINUTES * 60 * 1000);
-  if (EPG_REFRESH_MINUTES > 0)
-    setInterval(async () => {
-      try {
-        await refreshEpgFile();
-      } catch {}
-    }, EPG_REFRESH_MINUTES * 60 * 1000);
-
-  // PSSH cache cleanup — every hour, purge entries older than 24h
-  setInterval(cleanupPsshCache, 3600 * 1000);
-  cleanupPsshCache(); // run once at boot
-
-  // ── Background token refresh task ─────────────────────────
-  // Task 1: Daily at random time — check refresh_tokens, if <=15 days left, refresh them
+  // ── Background tasks ──────────────────────────────────────
   async function backgroundRefreshTokens() {
     const store = loadTokensStore();
     const deviceUids = Object.keys(store);
@@ -3224,7 +3173,6 @@ async function main() {
     log(`[bg-refresh] Checking ${deviceUids.length} devices…`);
     let refreshed = 0, failed = 0, skipped = 0;
     const now = Date.now();
-    const fifteenDaysMs = 15 * 24 * 60 * 60 * 1000;
     for (const uid of deviceUids) {
       const arr = store[uid] as Array<Record<string, unknown>> | undefined;
       const latest = arr?.length ? arr[arr.length - 1] : null;
@@ -3265,7 +3213,6 @@ async function main() {
     try { saveTokensStore(store); } catch {}
   }
 
-  // Task 2: Every 10 days at random time — refresh wv_license_proxy_url_live + _vod for all devices
   async function backgroundRefreshLicenseUrls() {
     const store = loadTokensStore();
     const deviceUids = Object.keys(store);
@@ -3303,7 +3250,6 @@ async function main() {
     try { saveTokensStore(store); } catch {}
   }
 
-  // Schedule daily (random time) for token refresh
   function scheduleNextTokenRefresh() {
     const now = new Date();
     const next = new Date(now);
@@ -3318,7 +3264,6 @@ async function main() {
   }
   scheduleNextTokenRefresh();
 
-  // Schedule every 10 days (random time) for license URL refresh
   function scheduleNextLicenseUrlRefresh() {
     const now = new Date();
     const next = new Date(now);
@@ -3333,10 +3278,28 @@ async function main() {
   }
   scheduleNextLicenseUrlRefresh();
 
-  // Run both once at boot (after 60s)
-  setTimeout(() => { backgroundRefreshTokens().catch(() => {}); }, 60000);
-  setTimeout(() => { backgroundRefreshLicenseUrls().catch(() => {}); }, 90000);
+  // Start intervals
+  if (AUTO_REFRESH_MINUTES > 0) setInterval(runAutoRefresh, AUTO_REFRESH_MINUTES * 60 * 1000);
+  if (EPG_REFRESH_MINUTES > 0)
+    setInterval(async () => {
+      try { await refreshEpgFile(); } catch {}
+    }, EPG_REFRESH_MINUTES * 60 * 1000);
+  setInterval(cleanupPsshCache, 3600 * 1000);
+  cleanupPsshCache();
 
+  // ── Boot: listen FIRST, then hydrate + fetch data ────────
+  // 1) Connect MongoDB + hydrate in-memory cache
+  try {
+    await connectMongo();
+    await initFromMongo();
+    log("[boot] MongoDB hydrated");
+  } catch (e) {
+    log("[boot] MongoDB connection failed — using file fallback:", (e as Error).message);
+  }
+
+  loadTokens();
+
+  // 2) Start listening immediately so healthcheck passes
   server.listen(PORT, "0.0.0.0", () => {
     console.log("");
     console.log("  ┌───────────────────────────────────────────────────────────┐");
@@ -3350,6 +3313,29 @@ async function main() {
     console.log("  └───────────────────────────────────────────────────────────┘");
     console.log("");
   });
+
+  // 3) Fetch missing data in background (after server is listening)
+  (async () => {
+    const needChannels = !loadChannels();
+    const needCats = !loadCategoriesIndex();
+    const needEpg = !fs.existsSync(EPG_XML_FILE);
+    if (needChannels || needCats) {
+      log("[boot] Missing data — fetching…");
+      try { await runAutoRefresh(); } catch (e) { log("[boot] failed:", (e as Error).message); }
+    } else if (needEpg) {
+      log("[boot] EPG missing — building…");
+      try { await refreshEpgFile(); } catch (e) { log("[boot] failed:", (e as Error).message); }
+    } else {
+      log("[boot] All data files present");
+    }
+
+    const n = indexAllEpisodesFromDisk();
+    log(`[boot] Indexed ${n} episodes from disk`);
+
+    // Run background tasks once at boot
+    setTimeout(() => { backgroundRefreshTokens().catch(() => {}); }, 60000);
+    setTimeout(() => { backgroundRefreshLicenseUrls().catch(() => {}); }, 90000);
+  })();
 }
 
 main().catch((e) => {
