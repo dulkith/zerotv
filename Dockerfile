@@ -33,6 +33,7 @@ COPY --from=builder /app/public ./public
 COPY --from=builder /app/server.mjs ./
 COPY package.json ./
 
+RUN apk add --no-cache curl
 RUN mkdir -p data
 RUN chown -R nextjs:nodejs /app
 
