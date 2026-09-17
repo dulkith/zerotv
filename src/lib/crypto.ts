@@ -81,12 +81,12 @@ export function verifyAdminSession(token: string): boolean {
 // ---- DRM Token (HMAC-Signed) ----
 // WV format: drm:wv:{kind}:{deviceUid}:{exp}:{nonce}:{hmac}
 // FP format: drm:fp:{kind}:{deviceUid}:{assetId}:{exp}:{nonce}:{hmac}
-export function signDrmToken(kind: string, ttlMs: number, deviceUid?: string, drmType: string = "wv", assetId?: string): string {
+export function signDrmToken(kind: string, ttlMs: number, deviceUid?: string, drmType: string = "wv", assetId?: string, contentUid?: string): string {
   const exp = Date.now() + ttlMs;
   const nonce = crypto.randomBytes(10).toString("hex");
   let payload: string;
   if (drmType === "fp" && assetId) {
-    payload = `drm:fp:${kind}:${deviceUid || ""}:${assetId}:${exp}:${nonce}`;
+    payload = `drm:fp:${kind}:${deviceUid || ""}:${assetId}:${contentUid || ""}:${exp}:${nonce}`;
   } else {
     payload = `drm:${drmType}:${kind}:${deviceUid || ""}:${exp}:${nonce}`;
   }
@@ -97,14 +97,30 @@ export function signDrmToken(kind: string, ttlMs: number, deviceUid?: string, dr
   return Buffer.from(`${payload}:${sig}`).toString("base64url");
 }
 
-export function verifyDrmToken(token: string): { kind: string; deviceUid?: string; drmType: string; assetId?: string } | null {
+export function verifyDrmToken(token: string): { kind: string; deviceUid?: string; drmType: string; assetId?: string; contentUid?: string } | null {
   try {
     const raw = Buffer.from(token, "base64url").toString("utf8");
     const parts = raw.split(":");
     if (parts[0] !== "drm") return null;
 
+    // FP format v2 (with contentUid): drm:fp:{kind}:{deviceUid}:{assetId}:{contentUid}:{exp}:{nonce}:{hmac} = 9 parts
+    if (parts.length === 9 && parts[1] === "fp") {
+      const [, drmType, kind, deviceUid, assetId, contentUid, expStr, nonce, sig] = parts;
+      const exp = parseInt(expStr, 10);
+      if (!isFinite(exp) || exp < Date.now()) return null;
+      const expected = crypto
+        .createHmac("sha256", getDrmKey())
+        .update(`drm:${drmType}:${kind}:${deviceUid}:${assetId}:${contentUid}:${expStr}:${nonce}`)
+        .digest("hex");
+      const a = Buffer.from(sig, "hex");
+      const b = Buffer.from(expected, "hex");
+      if (a.length !== b.length) return null;
+      if (!crypto.timingSafeEqual(a, b)) return null;
+      return { kind, deviceUid: deviceUid || undefined, drmType: "fp", assetId: assetId || undefined, contentUid: contentUid || undefined };
+    }
+
+    // FP format v1 (legacy): drm:fp:{kind}:{deviceUid}:{assetId}:{exp}:{nonce}:{hmac}
     if (parts.length === 7 && parts[1] === "fp") {
-      // FP format: drm:fp:{kind}:{deviceUid}:{assetId}:{exp}:{nonce}:{hmac}
       const [prefix, drmType, kind, deviceUid, assetId, expStr, nonce_sig] = parts;
       const lastColon = nonce_sig.lastIndexOf(":");
       const expStr2 = expStr;

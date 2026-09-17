@@ -41,6 +41,7 @@ interface PlayRequest {
 interface StreamData {
   url: string;
   license: string;
+  licenseFp?: string;
   isLive: boolean;
 }
 
@@ -141,6 +142,16 @@ export default function HomePage() {
     window.addEventListener("popstate", handler);
     return () => window.removeEventListener("popstate", handler);
   }, []);
+
+  // Handle ?detail= on initial load
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const detailUid = params.get("detail");
+    if (detailUid && !selectedVod) {
+      const type = detailUid.startsWith("s") ? "series" : "movie";
+      setSelectedVod({ uid: detailUid, title: "", type, poster: null, year: null, duration: null, category: null });
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadCategory = useCallback(async (catUid: string) => {
     if (categoryItems[catUid]) return;
@@ -443,6 +454,7 @@ export default function HomePage() {
                     key={item.uid}
                     item={item}
                     onPlay={() => handleOpenVod(item)}
+                    onDirectPlay={item.type !== "series" ? () => handlePlay(item.uid, "movie") : undefined}
                   />
                 ))}
               </div>
@@ -492,6 +504,7 @@ export default function HomePage() {
             <VideoPlayer
               streamUrl={streamData.url}
               licenseUrl={streamData.license}
+              licenseFp={streamData.licenseFp}
               title={streamMeta.title}
               subtitle={streamMeta.subtitle}
               bannerId={streamMeta.bannerId}

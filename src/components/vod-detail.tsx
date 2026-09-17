@@ -74,8 +74,10 @@ export function VodDetail({ uid, type, onClose, onPlay }: VodDetailProps) {
     const ctrl = new AbortController();
     async function load() {
       try {
+        const { getDeviceUid } = await import("@/lib/auth");
+        const deviceUid = await getDeviceUid();
         const endpoint = type === "movie" ? `/api/details/movie/${encodeURIComponent(uid)}` : `/api/details/series/${encodeURIComponent(uid)}`;
-        const res = await fetch(endpoint, { signal: ctrl.signal });
+        const res = await fetch(endpoint, { headers: { "x-device-uid": deviceUid }, signal: ctrl.signal });
         if (res.ok) {
           const data = await res.json();
           if (type === "movie") setMovieData(data);

@@ -1,6 +1,6 @@
 import https from "https";
 import http from "http";
-import { VIU_ORIGIN, VIU_REFERER, USER_AGENT, DIRECT_API, IMG_ACCESS_KEY } from "./constants";
+import { VIU_ORIGIN, VIU_REFERER, USER_AGENT, DIRECT_API, IMG_ACCESS_KEY, FP_LOGIN_USER_AGENT, FP_DRM_USER_AGENT } from "./constants";
 
 const httpsAgent = new https.Agent({
   keepAlive: true,
@@ -122,10 +122,10 @@ export async function registerDeviceV2(registrationToken: string, params: {
 }): Promise<{ status: number; data: Record<string, unknown> }> {
   const headers: Record<string, string> = {
     accept: "application/json, text/plain, */*",
+    "accept-language": "en-GB,en;q=0.9",
     "content-type": "application/json",
-    authorization: `Bearer ${registrationToken}`,
-    origin: "https://registration.viu.lk",
-    referer: "https://registration.viu.lk/",
+    origin: "https://smarttv.viu.lk",
+    referer: "https://smarttv.viu.lk/",
     "user-agent": USER_AGENT,
   };
   const body = {
@@ -366,7 +366,7 @@ export function extractChannelId(cm: string | null): string | null {
   return d !== -1 && d < s.length - 1 ? s.slice(d + 1).trim() : s;
 }
 
-export async function fetchWvLicenseProxyUrlLive(accessToken: string, userId: string = "918558"): Promise<string | null> {
+export async function fetchWvLicenseProxyUrlLive(accessToken: string, userId: string = "918558", channelUid: string = "channelone"): Promise<string | null> {
   try {
     const headers: Record<string, string> = {
       accept: "application/json, text/plain, */*",
@@ -378,7 +378,7 @@ export async function fetchWvLicenseProxyUrlLive(accessToken: string, userId: st
     const up = await httpsRequest({
       method: "GET",
       hostname: "api2.viu.lk",
-      path: `/api/client/v1/default/users/${userId}/live/channels/channelone?translation=en`,
+      path: `/api/client/v1/default/users/${userId}/live/channels/${channelUid}?translation=en`,
       headers,
     });
     if (up.statusCode !== 200) return null;
@@ -412,19 +412,19 @@ export async function fetchWvLicenseProxyUrlVod(accessToken: string, contentId: 
   }
 }
 
-export async function fetchFairPlayLicenseUrlLive(accessToken: string, userId: string = "918558"): Promise<{ fp_license_proxy_url: string | null; fp_certificate_url: string | null }> {
+export async function fetchFairPlayLicenseUrlLive(accessToken: string, userId: string = "918558", channelUid: string = "channelone"): Promise<{ fp_license_proxy_url: string | null; fp_certificate_url: string | null }> {
   try {
     const headers: Record<string, string> = {
       accept: "application/json, text/plain, */*",
       authorization: `Bearer ${accessToken}`,
       origin: "https://smarttv.viu.lk",
       referer: "https://smarttv.viu.lk/",
-      "user-agent": USER_AGENT,
+      "user-agent": FP_DRM_USER_AGENT,
     };
     const up = await httpsRequest({
       method: "GET",
       hostname: "api2.viu.lk",
-      path: `/api/client/v1/default/users/${userId}/live/channels/channelone?translation=en`,
+      path: `/api/client/v1/default/users/${userId}/live/channels/${channelUid}?translation=en`,
       headers,
     });
     if (up.statusCode !== 200) return { fp_license_proxy_url: null, fp_certificate_url: null };
@@ -445,7 +445,7 @@ export async function fetchFairPlayLicenseUrlVod(accessToken: string, contentId:
       authorization: `Bearer ${accessToken}`,
       origin: "https://smarttv.viu.lk",
       referer: "https://smarttv.viu.lk/",
-      "user-agent": USER_AGENT,
+      "user-agent": FP_DRM_USER_AGENT,
     };
     const up = await httpsRequest({
       method: "GET",
@@ -561,15 +561,16 @@ export async function fetchSeriesDetail(token: string, realId: string, userId: s
   return JSON.parse(up.body.toString("utf8"));
 }
 
-export async function fetchOtpLogin(body: Record<string, unknown>): Promise<{ status: number; data: Record<string, unknown> }> {
+export async function fetchOtpLogin(body: Record<string, unknown>, customUA?: string): Promise<{ status: number; data: Record<string, unknown> }> {
   const url = "https://api.viu.lk/api/client/v2/global/login";
+  const isIOS = String(body.device_os).toUpperCase() === "IOS";
   const headers: Record<string, string> = {
     accept: "application/json, text/plain, */*",
-    "accept-language": "en-GB,en;q=0.9",
+    "accept-language": "en-GB,en;q=0.6",
     "content-type": "application/json",
-    origin: "https://registration.viu.lk",
-    referer: "https://registration.viu.lk/",
-    "user-agent": USER_AGENT,
+    origin: "https://smarttv.viu.lk",
+    referer: "https://smarttv.viu.lk/",
+    "user-agent": customUA || (isIOS ? FP_LOGIN_USER_AGENT : USER_AGENT),
   };
   return new Promise((resolve, reject) => {
     const req = https.request(

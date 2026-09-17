@@ -15,9 +15,10 @@ function fmtDur(m: number | null): string {
 interface VodCardProps {
   item: VodItem;
   onPlay: () => void;
+  onDirectPlay?: () => void;
 }
 
-export function VodCard({ item, onPlay }: VodCardProps) {
+export function VodCard({ item, onPlay, onDirectPlay }: VodCardProps) {
   const isSeries = item.type === "series";
 
   return (
@@ -48,7 +49,7 @@ export function VodCard({ item, onPlay }: VodCardProps) {
       </button>
       {!isSeries && (
         <button
-          onClick={(e) => { e.stopPropagation(); onPlay(); }}
+          onClick={(e) => { e.stopPropagation(); if (onDirectPlay) onDirectPlay(); else onPlay(); }}
           className="absolute top-1.5 right-1.5 z-10 w-6 h-6 rounded-full bg-[#ec1c24] text-white flex items-center justify-center shadow-lg"
         >
           <svg viewBox="0 0 24 24" fill="currentColor" className="w-2.5 h-2.5 ml-0.5">

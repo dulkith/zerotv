@@ -87,7 +87,6 @@ export interface SeriesEpisode {
 
 export interface StreamToken {
   url: string;
-  hlsUrl?: string;
   license: string;
   licenseWv?: string;
   licenseFp?: string;

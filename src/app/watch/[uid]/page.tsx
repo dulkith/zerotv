@@ -53,6 +53,7 @@ export default function WatchPage() {
 
       const data = await streamRes.json();
       if (begin && end) data.isLive = false;
+      console.log("[watch] stream response keys:", Object.keys(data).join(","), "fp:", !!data.licenseFp);
       setStreamData(data);
 
       try {
@@ -131,12 +132,9 @@ export default function WatchPage() {
 
   if (!streamData) return null;
 
-  const isSafari = typeof navigator !== "undefined" && /Safari/i.test(navigator.userAgent) && !/Chrome|Chromium|Edg/i.test(navigator.userAgent);
-  const useHls = isSafari && !!streamData.hlsUrl;
-
   return (
     <VideoPlayer
-      streamUrl={useHls ? streamData.hlsUrl! : streamData.url}
+      streamUrl={streamData.url}
       licenseUrl={streamData.licenseWv || streamData.license}
       licenseFp={streamData.licenseFp}
       title={meta.title}

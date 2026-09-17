@@ -134,103 +134,60 @@ export function VideoPlayer({ streamUrl, licenseUrl, licenseFp, title, subtitle,
   useEffect(() => {
     let destroyed = false;
 
-    const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
-    const isSafari = /Safari/i.test(navigator.userAgent) && !/Chrome|Chromium|Edg/i.test(navigator.userAgent);
-    const useNativeFairplay = isIOS || (isSafari && typeof (window as any).WebKitMediaKeys !== "undefined");
+    let capturedAssetId = "";
+
+    function extractAssetIdFromInitData(initData: ArrayBuffer | null): string {
+      if (!initData) return "";
+      const bytes = new Uint8Array(initData);
+      const candidates: string[] = [];
+      const tryDecode = (enc: string) => {
+        try { candidates.push(new TextDecoder(enc, { fatal: false }).decode(bytes)); } catch (_) {}
+      };
+      tryDecode("utf-8");
+      tryDecode("utf-16be");
+      tryDecode("utf-16le");
+      if (bytes.byteLength > 4) {
+        const tryDecode4 = (enc: string) => {
+          try { candidates.push(new TextDecoder(enc, { fatal: false }).decode(bytes.subarray(4))); } catch (_) {}
+        };
+        tryDecode4("utf-8");
+        tryDecode4("utf-16be");
+      }
+      for (const text of candidates) {
+        let m = text.match(/URI\s*=\s*"skd:\/\/([^"?#\s]+)/i);
+        if (!m) m = text.match(/URI\s*=\s*skd:\/\/([^"?#\s]+)/i);
+        if (!m) m = text.match(/skd:\/\/([^\s"'?#]+)/i);
+        if (m) return m[1];
+      }
+      if (bytes.byteLength === 16 || bytes.byteLength === 20) {
+        const uuidBytes = bytes.byteLength === 20 ? bytes.subarray(4) : bytes;
+        const hex = Array.from(uuidBytes.slice(0, 16)).map(b => b.toString(16).padStart(2, "0")).join("");
+        return (hex.slice(0, 8) + "-" + hex.slice(8, 12) + "-" + hex.slice(12, 16) + "-" + hex.slice(16, 20) + "-" + hex.slice(20, 32)).toUpperCase();
+      }
+      return "";
+    }
 
     async function init() {
-      const video = videoRef.current;
-      if (!video) return;
-
-      // ── iOS/iPadOS: native <video> + FairPlay EME ──
-      if (useNativeFairplay && licenseFp && /m3u8/i.test(streamUrl)) {
-        console.log("[player] iOS/Safari native HLS + FairPlay");
-        try {
-          video.src = streamUrl;
-
-          video.addEventListener("encrypted", async (e: any) => {
-            if (destroyed) return;
-            const initDataType = e.initDataType;
-            const initData = e.initData;
-            console.log("[player] encrypted event:", initDataType);
-
-            try {
-              const keySystemAccess = await (navigator as any).requestMediaKeySystemAccess(
-                "com.apple.fps",
-                [{
-                  initDataTypes: [initDataType],
-                  videoCapabilities: [{ contentType: "video/mp4" }],
-                  distinctiveIdentifier: "optional",
-                  persistentLicense: { persistentRobustness: "SW_SECURE_DECODE" },
-                }]
-              );
-              const mediaKeys = await keySystemAccess.createMediaKeys();
-              await video.setMediaKeys(mediaKeys);
-              const session = mediaKeys.createSession();
-
-              session.addEventListener("message", async (msgEvent: any) => {
-                const message = msgEvent.message;
-                const spcBytes = new Uint8Array(message);
-                let binary = "";
-                const chunkSize = 0x8000;
-                for (let i = 0; i < spcBytes.length; i += chunkSize) {
-                  binary += String.fromCharCode.apply(null, Array.from(spcBytes.subarray(i, i + chunkSize)));
-                }
-                const spcB64 = btoa(binary);
-                const uid = localStorage.getItem("deviceUid") || "";
-
-                try {
-                  const resp = await fetch(licenseFp, {
-                    method: "POST",
-                    headers: {
-                      "Content-Type": "application/json",
-                      "x-device-uid": uid,
-                    },
-                    body: JSON.stringify({ spc: spcB64, assetId: "" }),
-                  });
-                  const result = await resp.json();
-                  const ckcB64 = result.ckc || result.CKC || result.license || result.contentKeyContext || result.payload;
-                  if (typeof ckcB64 !== "string") throw new Error("No CKC in response");
-                  const ckcBin = atob(ckcB64);
-                  const ckcBytes = new Uint8Array(ckcBin.length);
-                  for (let i = 0; i < ckcBin.length; i++) ckcBytes[i] = ckcBin.charCodeAt(i);
-                  await session.update(ckcBytes);
-                  console.log("[player] FairPlay license updated");
-                } catch (err) {
-                  console.error("[player] FairPlay license error:", err);
-                  if (!destroyed) setError("FairPlay license failed");
-                }
-              });
-
-              await session.generateRequest(initDataType, initData);
-              console.log("[player] FairPlay session generated");
-            } catch (err) {
-              console.error("[player] FairPlay EME error:", err);
-              if (!destroyed) setError("FairPlay DRM not supported");
-            }
-          });
-
-          setBootLabel(title || "Loading");
-          video.muted = true;
-          await video.play();
-          video.addEventListener("playing", () => { setTimeout(() => { if (video.muted) video.muted = false; }, 300); }, { once: true });
-          setBooting(false);
-        } catch (err: any) {
-          setBooting(false);
-          setError(err?.message || "Native HLS failed");
-        }
-        return;
-      }
-
-      // ── Shaka Player (Widevine or Shaka FairPlay on desktop Safari) ──
       try {
         if (!window.shaka) {
           const script = document.createElement("script");
-          script.src = "https://ajax.googleapis.com/ajax/libs/shaka-player/4.12.6/shaka-player.compiled.js";
+          script.src = "https://cdn.jsdelivr.net/npm/shaka-player@4.16.6/dist/shaka-player.compiled.debug.js";
           await new Promise<void>((res, rej) => { script.onload = () => res(); script.onerror = rej; document.head.appendChild(script); });
         }
       } catch { setError("Failed to load player library"); return; }
       if (destroyed || !videoRef.current) return;
+
+      (window as any).shaka.polyfill.installAll();
+
+      const video = videoRef.current;
+
+      video.addEventListener("encrypted", (e: any) => {
+        const id = extractAssetIdFromInitData(e.initData);
+        if (id) {
+          capturedAssetId = id;
+          console.log("[player] captured assetId:", id);
+        }
+      }, { capture: true, once: true });
 
       const player = new window.shaka.Player();
       await player.attach(video);
@@ -243,13 +200,9 @@ export function VideoPlayer({ streamUrl, licenseUrl, licenseFp, title, subtitle,
         setError(d?.message || `Error ${d?.code}`);
       });
 
-      function detectDrmType(): "fairplay" | "widevine" {
-        if (/iPhone|iPad|iPod/.test(navigator.userAgent)) return "fairplay";
-        if (typeof (window as any).WebKitMediaKeys !== "undefined") return "fairplay";
-        return "widevine";
-      }
-      const drmType = licenseFp ? detectDrmType() : "widevine";
-      console.log("[shaka] DRM type:", drmType);
+      const isSafari = /Safari/i.test(navigator.userAgent) && !/Chrome|Chromium|Edg|CriOS|FxiOS/i.test(navigator.userAgent);
+      const drmType = (licenseFp && isSafari) ? "fairplay" : "widevine";
+      console.log("[shaka] DRM type:", drmType, "safari:", isSafari, "fp:", !!licenseFp, "licenseFp:", licenseFp, "licenseWv:", licenseUrl, "stream:", streamUrl);
 
       const config: Record<string, unknown> = {
         drm: { retryParameters: { maxAttempts: 3, baseDelay: 500, backoffFactor: 2, timeout: 30000 } },
@@ -277,7 +230,7 @@ export function VideoPlayer({ streamUrl, licenseUrl, licenseFp, title, subtitle,
         else if (request?.getHeader) request.setHeader("x-device-uid", uid);
 
         if (drmType === "fairplay" && type === (window as any).shaka?.net?.NetworkingEngine?.RequestType?.LICENSE) {
-          if (request.body && request.body.byteLength > 0) {
+          if (request.body && new Uint8Array(request.body).byteLength > 0) {
             const spcBytes = new Uint8Array(request.body);
             let binary = "";
             const chunk = 0x8000;
@@ -285,7 +238,7 @@ export function VideoPlayer({ streamUrl, licenseUrl, licenseFp, title, subtitle,
               binary += String.fromCharCode.apply(null, Array.from(spcBytes.subarray(i, i + chunk)));
             }
             const spcB64 = btoa(binary);
-            const jsonBody = JSON.stringify({ spc: spcB64, assetId: "" });
+            const jsonBody = JSON.stringify({ spc: spcB64, assetId: capturedAssetId || "" });
             request.body = new TextEncoder().encode(jsonBody).buffer;
             if (request.headers) {
               request.headers["Content-Type"] = "application/json";
