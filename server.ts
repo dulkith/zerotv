@@ -931,9 +931,8 @@ async function fetchEpgPerChannel(channels: Array<Record<string, unknown>>, s: s
 function parseEpgPrograms(data: Record<string, unknown>) {
   const out: Array<Record<string, unknown>> = [];
   for (const entry of (data.data || []) as Array<Record<string, unknown>>) {
-    const rawCh = entry.id;
-    if (!rawCh) continue;
-    const ch = makeUidLocal("c", rawCh);
+    const ch = entry.id;
+    if (!ch) continue;
     for (const s of (entry.shows || []) as Array<Record<string, unknown>>) {
       if (!s.start || !s.end) continue;
       let sd: Date, ed: Date;
@@ -989,14 +988,17 @@ function buildXmltv(channels: Array<Record<string, unknown>>, programs: Array<Re
   L.push('<?xml version="1.0" encoding="UTF-8"?>');
   L.push("<!DOCTYPE tv SYSTEM \"xmltv.dtd\">");
   L.push('<tv generator-info-name="LankaTV">');
+  const rawToUid = new Map<string, string>();
   for (const c of channels) {
     const rawId = c.id || c.channel_id;
     if (!rawId) continue;
     const uid = makeUidLocal("c", rawId);
+    rawToUid.set(String(rawId), uid);
     L.push(`  <channel id="${xmlEsc(uid)}"><display-name>${xmlEsc(c.name || "")}</display-name></channel>`);
   }
   for (const p of programs) {
-    L.push(`  <programme start="${xmltvTime(String(p.start))}" stop="${xmltvTime(String(p.end))}" channel="${xmlEsc(p.ch)}">`);
+    const chUid = rawToUid.get(String(p.ch)) || String(p.ch);
+    L.push(`  <programme start="${xmltvTime(String(p.start))}" stop="${xmltvTime(String(p.end))}" channel="${xmlEsc(chUid)}">`);
     L.push(`    <title lang="en">${xmlEsc(p.title)}</title>`);
     if (p.desc) L.push(`    <desc lang="en">${xmlEsc(p.desc)}</desc>`);
     L.push("  </programme>");
@@ -2017,17 +2019,17 @@ expressApp.get("/api/epg/now", (req, res) => {
   const cj = loadChannels();
   if (!cj) return res.json({ updatedAt: epg.updatedAt, now: {} });
   const chs = flattenChannels(cj);
-  const idToUid = new Map<string, string>();
+  const rawToUid = new Map<string, string>();
   for (const ch of chs) {
     const realId = ch.id || ch.channel_id || ch.uid;
     if (!realId) continue;
-    idToUid.set(String(realId), makeUidLocal("c", realId as string | number));
+    rawToUid.set(String(realId), makeUidLocal("c", realId as string | number));
   }
   scheduleUidSave();
   const now = Date.now();
   const out: Record<string, { now: Record<string, unknown> | null; next: Record<string, unknown> | null }> = {};
   for (const p of epg.programs) {
-    const chUid = idToUid.get(String(p.ch));
+    const chUid = rawToUid.get(String(p.ch));
     if (!chUid) continue;
     const s = new Date(p.start).getTime(),
       e = new Date(p.end).getTime();
@@ -2049,15 +2051,17 @@ expressApp.get("/api/epg/channel/:uid", (req, res) => {
   const now = Date.now();
   const from = now - 3 * 24 * 3600 * 1000;
   const to = now + days * 24 * 3600 * 1000;
+  const uid = req.params.uid;
+  const realId = String(ref.realId);
   const programs = epg.programs
-    .filter((p) => String(p.ch) === String(ref.realId))
+    .filter((p) => { const ch = String(p.ch); return ch === uid || ch === realId; })
     .filter((p) => {
       const s = new Date(p.start).getTime();
       return s >= from && s <= to;
     })
     .map(projectProgram);
   res.setHeader("Cache-Control", "public, max-age=60");
-  res.json({ channel: req.params.uid, updatedAt: epg.updatedAt || null, total: programs.length, programs });
+  res.json({ channel: uid, updatedAt: epg.updatedAt || null, total: programs.length, programs });
 });
 
 // ── DETAILS ROUTES ───────────────────────────────────────────
