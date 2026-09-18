@@ -1,14 +1,16 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
-import { Search } from "lucide-react";
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from "react";
+import { Search, Tv, Film, Clapperboard, Monitor, Smartphone, Tablet, Laptop, LayoutGrid, Radio, Globe, Play, ChevronDown } from "lucide-react";
 import { ChannelCard } from "@/components/channel-card";
 import { VodCard } from "@/components/vod-card";
-import { VodDetail } from "@/components/vod-detail";
-import { EpgSchedule } from "@/components/epg-schedule";
-import { VideoPlayer } from "@/components/video-player";
+import { LoginDialog } from "@/components/login-dialog";
 import { getDeviceUid } from "@/lib/auth";
 import type { Channel, Category, VodItem } from "@/types";
+
+const VodDetail = lazy(() => import("@/components/vod-detail").then((m) => ({ default: m.VodDetail })));
+const EpgSchedule = lazy(() => import("@/components/epg-schedule").then((m) => ({ default: m.EpgSchedule })));
+const VideoPlayer = lazy(() => import("@/components/video-player").then((m) => ({ default: m.VideoPlayer })));
 
 interface EpgNow {
   now: { start: string; end: string; title: string; img: number | null } | null;
@@ -69,6 +71,15 @@ export default function HomePage() {
   const [epgNow, setEpgNow] = useState<Record<string, EpgNow>>({});
   const [loading, setLoading] = useState(true);
   const [signedIn, setSignedIn] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [showLanding, setShowLanding] = useState(true);
+  const [copyrightAcknowledged, setCopyrightAcknowledged] = useState(false);
+  const [contactOpen, setContactOpen] = useState(false);
+  const [contactName, setContactName] = useState("");
+  const [contactMessage, setContactMessage] = useState("");
+  const [contactSending, setContactSending] = useState(false);
+  const [contactSent, setContactSent] = useState(false);
 
   // Overlay layers
   const [scheduleChannel, setScheduleChannel] = useState<Channel | null>(null);
@@ -109,8 +120,8 @@ export default function HomePage() {
     getDeviceUid().then((uid) => {
       fetch("/api/auth/state", { headers: { "x-device-uid": uid }, signal: ctrl.signal })
         .then((r) => r.json())
-        .then((d) => { if (!ctrl.signal.aborted) setSignedIn(d.signedIn || false); })
-        .catch(() => {});
+        .then((d) => { if (!ctrl.signal.aborted) { setSignedIn(d.signedIn || false); setAuthChecked(true); } })
+        .catch(() => { if (!ctrl.signal.aborted) setAuthChecked(true); });
     });
     const interval = setInterval(() => {
       fetch("/api/epg/now")
@@ -153,6 +164,16 @@ export default function HomePage() {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Handle ?epg= on initial load
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const epgUid = params.get("epg");
+    if (epgUid && channels.length && !scheduleChannel) {
+      const ch = channels.find((c) => c.uid === epgUid);
+      if (ch) setScheduleChannel(ch);
+    }
+  }, [channels.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const loadCategory = useCallback(async (catUid: string) => {
     if (categoryItems[catUid]) return;
     try {
@@ -176,6 +197,7 @@ export default function HomePage() {
     setStreamData(null);
     setStreamError("");
     setStreamLoading(true);
+    setStreamMeta(preloadedMeta || { title: "Loading…", subtitle: "", bannerId: null });
     abortRef.current?.abort();
     abortRef.current = new AbortController();
     const signal = abortRef.current.signal;
@@ -337,64 +359,387 @@ export default function HomePage() {
     : activeCatItems;
 
   return (
-    <div className="min-h-screen bg-[#0f0f0f]">
-      {/* Header */}
-      <header className="sticky top-0 z-40 bg-[#0f0f0f]/95 backdrop-blur-sm border-b border-white/5">
-        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between">
-          <h1 className="text-xl sm:text-2xl font-black tracking-tight">
-            Zero<span className="text-[#ec1c24]">TV</span>
-          </h1>
-          <div className="flex items-center gap-3">
-            <div className="hidden sm:flex items-center gap-2 text-xs text-white/40 uppercase tracking-widest">
-              <span className="w-2 h-2 rounded-full bg-[#22c55e] animate-pulse" /> Live · VOD
+    <div className="min-h-screen bg-[#0a0a0c]">
+      {/* Landing page */}
+      {showLanding && (
+        <div className="fixed inset-0 z-[80] flex flex-col bg-[#0a0a0c] overflow-y-auto">
+          {/* Hero */}
+          <div className="relative min-h-[100dvh] flex flex-col">
+            {/* Ambient glow */}
+            <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[600px] bg-[#ec1c24]/8 rounded-full blur-[120px] pointer-events-none" />
+            <div className="absolute bottom-0 right-0 w-[400px] h-[400px] bg-[#ec1c24]/5 rounded-full blur-[100px] pointer-events-none" />
+
+            {/* Nav */}
+            <nav className="relative z-10 flex items-center justify-between px-6 sm:px-10 py-5">
+              <img src="/lanka_tv_logo.png" alt="LankaTV" className="h-8 sm:h-10" />
+              <div className="flex items-center gap-3">
+                <a href="#features" className="text-sm text-white/50 hover:text-white transition-colors font-medium hidden sm:block">Features</a>
+                <a href="#devices" className="text-sm text-white/50 hover:text-white transition-colors font-medium hidden sm:block">Devices</a>
+                {authChecked && (
+                  signedIn ? (
+                    <button onClick={() => setShowLanding(false)} className="text-sm text-white/80 hover:text-white px-4 py-2 rounded-xl bg-[#ec1c24] hover:bg-[#d41a20] transition-all font-bold shadow-[0_2px_10px_rgba(236,28,36,0.3)]">
+                      Watch Now
+                    </button>
+                  ) : (
+                    <button onClick={() => { setShowLanding(false); setLoginOpen(true); }} className="text-sm text-white/80 hover:text-white px-4 py-2 rounded-xl border border-white/10 hover:border-white/20 transition-all font-semibold">
+                      Sign In
+                    </button>
+                  )
+                )}
+              </div>
+            </nav>
+
+            {/* Hero content */}
+            <div className="relative z-10 flex-1 flex flex-col items-center justify-center text-center px-6 pb-12">
+              <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-[#ec1c24]/10 border border-[#ec1c24]/20 mb-8">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#ec1c24] animate-pulse" />
+                <span className="text-xs text-[#ec1c24] font-bold uppercase tracking-wider">Live Now</span>
+              </div>
+
+              <h1 className="text-4xl sm:text-6xl md:text-7xl lg:text-8xl font-black text-white leading-[0.95] tracking-tight mb-6">
+                Stream<br />
+                <span className="text-[#ec1c24]">Anything.</span><br />
+                <span className="text-white/30">Anywhere.</span>
+              </h1>
+
+              <p className="text-base sm:text-lg text-white/40 max-w-md leading-relaxed mb-10 font-medium">
+                Live TV, Movies & Series — on any device. Smart TV, iPhone, Laptop, TiviMate, or your browser. No app needed.
+              </p>
+
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full sm:w-auto">
+                {authChecked && (
+                  signedIn ? (
+                    <>
+                      <button
+                        onClick={() => setShowLanding(false)}
+                        className="px-8 py-3.5 rounded-xl bg-[#ec1c24] text-white font-bold text-base hover:bg-[#d41a20] transition-all shadow-[0_4px_24px_rgba(236,28,36,0.4)] active:scale-[0.97] flex items-center justify-center gap-2"
+                      >
+                        <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5"><polygon points="6 4 20 12 6 20"/></svg>
+                        Watch Now
+                      </button>
+                      <a
+                        href="https://t.me/+rsIXSZEUUIM2OWNl"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-8 py-3.5 rounded-xl bg-[#0088cc]/10 text-[#5ea9e8] font-bold text-base border border-[#0088cc]/30 hover:bg-[#0088cc]/20 hover:border-[#0088cc]/50 transition-all flex items-center justify-center gap-2"
+                      >
+                        <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
+                        Join Telegram
+                      </a>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => { setShowLanding(false); setLoginOpen(true); }}
+                        className="px-8 py-3.5 rounded-xl bg-[#ec1c24] text-white font-bold text-base hover:bg-[#d41a20] transition-all shadow-[0_4px_24px_rgba(236,28,36,0.4)] active:scale-[0.97] flex items-center justify-center gap-2"
+                      >
+                        <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5"><polygon points="6 4 20 12 6 20"/></svg>
+                        Start Watching
+                      </button>
+                      <a
+                        href="https://t.me/+rsIXSZEUUIM2OWNl"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-8 py-3.5 rounded-xl bg-[#0088cc]/10 text-[#5ea9e8] font-bold text-base border border-[#0088cc]/30 hover:bg-[#0088cc]/20 hover:border-[#0088cc]/50 transition-all flex items-center justify-center gap-2"
+                      >
+                        <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
+                        Join Telegram
+                      </a>
+                    </>
+                  )
+                )}
+              </div>
+
+              {/* Scroll indicator */}
+              <div className="mt-16 flex flex-col items-center gap-2 text-white/20">
+                <span className="text-xs font-semibold uppercase tracking-widest">Scroll to explore</span>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-5 h-5 animate-bounce"><path d="m6 9 6 6 6-6"/></svg>
+              </div>
             </div>
-            {signedIn && (
-              <a href="/m3u" className="text-xs text-white/40 hover:text-white/70 transition-colors px-3 py-1.5 rounded-full border border-white/10 hover:border-white/20">
-                M3U
-              </a>
+          </div>
+
+          {/* Features */}
+          <div id="features" className="relative z-10 px-6 sm:px-10 py-8 sm:py-12 border-t border-white/[0.04]">
+            <div className="max-w-5xl mx-auto">
+              <div className="text-center mb-8">
+                <h2 className="text-3xl sm:text-4xl font-black text-white mb-2">Everything you need</h2>
+                <p className="text-sm text-white/30">One subscription. All your entertainment.</p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                {[
+                  { icon: <Radio className="w-7 h-7" />, title: "Live TV", desc: "Hundreds of live channels with real-time EPG and catchup" },
+                  { icon: <Film className="w-7 h-7" />, title: "Movies", desc: "Latest movies in HD, FHD & 4K with DRM protection" },
+                  { icon: <Clapperboard className="w-7 h-7" />, title: "Series", desc: "Full series with auto-play next and episode queue" },
+                ].map((f) => (
+                  <div key={f.title} className="group relative p-6 rounded-2xl bg-white/[0.02] border border-white/[0.06] hover:border-[#ec1c24]/30 transition-all overflow-hidden">
+                    <div className="absolute inset-0 bg-gradient-to-br from-[#ec1c24]/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+                    <div className="relative flex flex-col items-start text-left">
+                      <div className="w-12 h-12 rounded-xl bg-[#ec1c24]/10 border border-[#ec1c24]/20 flex items-center justify-center text-[#ec1c24] mb-4">
+                        {f.icon}
+                      </div>
+                      <h3 className="text-base font-bold text-white mb-1.5">{f.title}</h3>
+                      <p className="text-xs text-white/40 leading-relaxed">{f.desc}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Devices */}
+          <div id="devices" className="relative z-10 px-6 sm:px-10 py-6 sm:py-10 border-t border-white/[0.04]">
+            <div className="max-w-4xl mx-auto text-center">
+              <p className="text-[10px] uppercase tracking-[0.2em] text-[#ec1c24] font-bold mb-2">Compatible Devices</p>
+              <h2 className="text-2xl sm:text-3xl font-black text-white mb-5">Watch on any screen</h2>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-px bg-white/[0.04] rounded-2xl overflow-hidden">
+                {[
+                  { icon: <Tv className="w-6 h-6" />, name: "Smart TV" },
+                  { icon: <Monitor className="w-6 h-6" />, name: "Desktop" },
+                  { icon: <Smartphone className="w-6 h-6" />, name: "iPhone" },
+                  { icon: <LayoutGrid className="w-6 h-6" />, name: "TiviMate" },
+                  { icon: <Radio className="w-6 h-6" />, name: "OTT" },
+                  { icon: <Laptop className="w-6 h-6" />, name: "MacBook" },
+                  { icon: <Tablet className="w-6 h-6" />, name: "iPad" },
+                  { icon: <Globe className="w-6 h-6" />, name: "Browser" },
+                ].map((d) => (
+                  <div key={d.name} className="flex flex-col items-center gap-2 py-6 px-3 bg-[#0a0a0c] hover:bg-white/[0.03] transition-colors">
+                    <span className="text-white/50">{d.icon}</span>
+                    <span className="text-xs text-white/50 font-semibold">{d.name}</span>
+                  </div>
+                ))}
+              </div>
+              <p className="text-[10px] text-white/20 mt-4">No app needed — works in any browser or via M3U playlist</p>
+            </div>
+          </div>
+
+          {/* CTA */}
+          <div className="relative z-10 px-6 sm:px-10 py-8 sm:py-12 border-t border-white/[0.04]">
+            <div className="max-w-2xl mx-auto text-center">
+              <p className="text-[10px] uppercase tracking-[0.2em] text-[#ec1c24] font-bold mb-2">Get Started</p>
+              <h2 className="text-2xl sm:text-3xl font-black text-white mb-3">Ready to stream?</h2>
+              <p className="text-sm text-white/35 mb-6">{signedIn ? "You're all set. Start watching now." : "Get your M3U playlist or sign in to start watching on any device."}</p>
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-center gap-3 w-full sm:w-auto">
+                {authChecked && (
+                  signedIn ? (
+                    <>
+                      <button
+                        onClick={() => setShowLanding(false)}
+                        className="px-8 py-3.5 rounded-xl bg-[#ec1c24] text-white font-bold text-base hover:bg-[#d41a20] transition-all shadow-[0_4px_24px_rgba(236,28,36,0.4)] active:scale-[0.97] flex items-center justify-center gap-2"
+                      >
+                        <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5"><polygon points="6 4 20 12 6 20"/></svg>
+                        Watch Now
+                      </button>
+                      <a
+                        href="https://t.me/+rsIXSZEUUIM2OWNl"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-8 py-3.5 rounded-xl bg-[#0088cc]/10 text-[#5ea9e8] font-bold text-base border border-[#0088cc]/30 hover:bg-[#0088cc]/20 hover:border-[#0088cc]/50 transition-all flex items-center justify-center gap-2"
+                      >
+                        <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
+                        Join Telegram
+                      </a>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => { setShowLanding(false); setLoginOpen(true); }}
+                        className="px-8 py-3.5 rounded-xl bg-[#ec1c24] text-white font-bold text-base hover:bg-[#d41a20] transition-all shadow-[0_4px_24px_rgba(236,28,36,0.4)] active:scale-[0.97] flex items-center justify-center gap-2"
+                      >
+                        <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5"><polygon points="6 4 20 12 6 20"/></svg>
+                        Start Watching
+                      </button>
+                      <a
+                        href="https://t.me/+rsIXSZEUUIM2OWNl"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-8 py-3.5 rounded-xl bg-[#0088cc]/10 text-[#5ea9e8] font-bold text-base border border-[#0088cc]/30 hover:bg-[#0088cc]/20 hover:border-[#0088cc]/50 transition-all flex items-center justify-center gap-2"
+                      >
+                        <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
+                        Join Telegram
+                      </a>
+                    </>
+                  )
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="relative z-10 px-6 sm:px-10 py-6 border-t border-white/[0.04]">
+            <div className="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
+              <span className="text-xs font-bold text-white/30">LankaTV</span>
+              <p className="text-[10px] text-white/15">Stream anywhere. Any device. Anytime.</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Copyright Notice Overlay */}
+      {showLanding && !copyrightAcknowledged && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/80 backdrop-blur-sm px-4">
+          <div className="w-full max-w-lg bg-[#111113] border border-white/[0.08] rounded-2xl p-6 sm:p-8 shadow-2xl">
+            <div className="text-center mb-5">
+              <div className="w-12 h-12 rounded-full bg-[#ec1c24]/10 border border-[#ec1c24]/20 flex items-center justify-center mx-auto mb-4">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-6 h-6 text-[#ec1c24]"><path d="M12 9v4m0 4h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></svg>
+              </div>
+              <h3 className="text-lg font-bold text-white mb-1">Important Notice</h3>
+              <p className="text-xs text-white/40">To Broadcasters & Content Owners</p>
+            </div>
+            <div className="space-y-3 text-sm text-white/50 leading-relaxed mb-6">
+              <p>If you are a <span className="text-white/70 font-medium">copyright owner, broadcaster, or authorized representative</span> and have any concerns, issues, or takedown requests regarding any channel or content on LankaTV:</p>
+              <p>Please contact me directly. <span className="text-[#ec1c24] font-medium">I will not hesitate to take down or stop the site immediately.</span> A single request from you is more than enough — I will stop it right away because I truly respect your rights and work.</p>
+            </div>
+
+            {contactSent ? (
+              <div className="text-center py-4 rounded-xl bg-[#22c55e]/10 border border-[#22c55e]/20 mb-4">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-8 h-8 text-[#22c55e] mx-auto mb-2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                <p className="text-[#22c55e] font-bold text-sm">Message sent!</p>
+                <p className="text-white/40 text-xs mt-1">We will get back to you shortly.</p>
+              </div>
+            ) : contactOpen ? (
+              <div className="space-y-3 mb-4">
+                <input
+                  type="text"
+                  placeholder="Your Name (optional)"
+                  value={contactName}
+                  onChange={(e) => setContactName(e.target.value)}
+                  className="w-full px-4 py-3 rounded-xl bg-white/[0.05] border border-white/[0.08] text-white text-sm placeholder:text-white/25 outline-none focus:border-[#22c55e]/40 transition-colors"
+                />
+                <textarea
+                  placeholder="Your message..."
+                  rows={4}
+                  value={contactMessage}
+                  onChange={(e) => setContactMessage(e.target.value)}
+                  className="w-full px-4 py-3 rounded-xl bg-white/[0.05] border border-white/[0.08] text-white text-sm placeholder:text-white/25 outline-none focus:border-[#22c55e]/40 transition-colors resize-none"
+                />
+                <div className="flex gap-3">
+                  <button
+                    onClick={async () => {
+                      if (!contactMessage.trim()) return;
+                      setContactSending(true);
+                      try {
+                        await fetch("/api/telegram", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ name: contactName || "Anonymous", message: contactMessage }),
+                        });
+                        setContactSent(true);
+                      } catch {
+                        // ignore
+                      } finally {
+                        setContactSending(false);
+                      }
+                    }}
+                    disabled={contactSending || !contactMessage.trim()}
+                    className="flex-1 py-3 rounded-xl bg-[#22c55e] text-white font-bold text-sm hover:bg-[#1fa84e] transition-all disabled:opacity-40 flex items-center justify-center gap-2"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                    {contactSending ? "Sending..." : "Send"}
+                  </button>
+                  <button
+                    onClick={() => { setContactOpen(false); setContactMessage(""); setContactName(""); }}
+                    className="px-6 py-3 rounded-xl bg-white/[0.05] text-white/50 font-medium text-sm border border-white/[0.08] hover:bg-white/[0.08] transition-all"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {!contactOpen && !contactSent && (
+              <div className="flex flex-col sm:flex-row gap-3">
+                <button
+                  onClick={() => setContactOpen(true)}
+                  className="flex-1 py-3 rounded-xl bg-[#22c55e]/10 text-[#22c55e] font-bold text-sm border border-[#22c55e]/30 hover:bg-[#22c55e]/20 hover:border-[#22c55e]/50 transition-all flex items-center justify-center gap-2"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                  Contact
+                </button>
+                <button
+                  onClick={() => setCopyrightAcknowledged(true)}
+                  className="flex-1 py-3 rounded-xl bg-[#ec1c24]/10 text-[#ec1c24] font-bold text-sm border border-[#ec1c24]/30 hover:bg-[#ec1c24]/20 hover:border-[#ec1c24]/50 transition-all"
+                >
+                  I Understand &amp; Continue
+                </button>
+              </div>
             )}
-            {signedIn ? (
-              <span className="text-xs text-[#22c55e] px-3 py-1.5 rounded-full border border-[#22c55e]/30">
+          </div>
+        </div>
+      )}
+
+      {/* Header */}
+      <header className="sticky top-0 z-40 bg-[#0a0a0c]/95 backdrop-blur-md border-b border-white/[0.04]">
+        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <img src="/lanka_tv_logo.png" alt="LankaTV" className="h-8 sm:h-9" />
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/[0.04] border border-white/[0.06]">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#22c55e] animate-pulse" />
+              <span className="text-[10px] text-white/40 font-semibold">LIVE</span>
+            </div>
+            <a
+              href={signedIn ? "/m3u" : "/login"}
+              className={`text-xs transition-all px-3 py-1.5 rounded-lg font-semibold border ${
+                signedIn
+                  ? "text-white/50 hover:text-white border-[#ec1c24]/30 hover:border-[#ec1c24]/60 hover:bg-[#ec1c24]/10"
+                  : "text-white/30 border-white/[0.06] hover:border-white/[0.12]"
+              }`}
+            >
+              M3U
+            </a>
+            <a
+              href="https://t.me/yakalk_bot"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-[#22c55e] hover:text-white transition-all px-3 py-1.5 rounded-lg border border-[#22c55e]/20 hover:border-[#22c55e]/50 hover:bg-[#22c55e]/10 font-semibold flex items-center gap-1.5"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+              <span className="hidden sm:inline">Contact</span>
+            </a>
+            {authChecked && (signedIn ? (
+              <span className="text-xs text-[#22c55e] px-3 py-1.5 rounded-lg border border-[#22c55e]/20 bg-[#22c55e]/5 font-semibold">
                 ✓ Signed In
               </span>
             ) : (
-              <a href="/login" className="text-xs text-white/50 hover:text-white/80 transition-colors px-3 py-1.5 rounded-full border border-white/10 hover:border-white/20">
+              <button
+                onClick={() => setLoginOpen(true)}
+                className="text-xs text-white/50 hover:text-white transition-all px-3 py-1.5 rounded-lg border border-white/[0.06] hover:border-white/[0.12] hover:bg-white/[0.04] font-semibold"
+              >
                 Sign In
-              </a>
-            )}
+              </button>
+            ))}
           </div>
         </div>
         {/* Tabs */}
         <div className="max-w-[1600px] mx-auto px-4 sm:px-6 pb-3 overflow-x-auto no-scrollbar">
-          <div className="flex gap-2 items-center">
+          <div className="flex gap-1.5 items-center">
             <button
               onClick={() => handleTabChange("live")}
-              className={`flex items-center gap-2 px-3 sm:px-4 py-2 rounded-full text-xs sm:text-sm font-semibold transition-all whitespace-nowrap ${
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-bold transition-all whitespace-nowrap ${
                 currentTab === "live"
-                  ? "bg-[#ec1c24] text-white"
-                  : "bg-white/5 text-white/60 hover:bg-white/10"
+                  ? "bg-[#ec1c24] text-white shadow-[0_2px_12px_rgba(236,28,36,0.4)]"
+                  : "bg-white/[0.04] text-white/50 hover:bg-white/[0.08] hover:text-white/80"
               }`}
             >
-              📺 Live TV
-              <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${currentTab === "live" ? "bg-black/25" : "bg-white/10"}`}>
+              <Tv className="w-4 h-4" /> Live TV
+              <span className={`px-1.5 py-0.5 rounded text-[9px] font-extrabold ${currentTab === "live" ? "bg-white/20" : "bg-white/[0.06]"}`}>
                 {channels.length}
               </span>
             </button>
-            <span className="text-[10px] uppercase tracking-widest text-white/25 font-bold px-1 flex-shrink-0">
-              Categories
-            </span>
+            <div className="w-px h-5 bg-white/10 mx-1 flex-shrink-0" />
             {categories.map((c) => (
               <button
                 key={c.uid}
                 onClick={() => handleTabChange(`cat:${c.uid}`)}
-                className={`flex items-center gap-2 px-3 py-2 rounded-full text-[11px] sm:text-xs font-semibold transition-all whitespace-nowrap ${
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-[11px] sm:text-xs font-semibold transition-all whitespace-nowrap ${
                   currentTab === `cat:${c.uid}`
-                    ? "bg-[#8b5cf6] text-white"
-                    : "bg-white/5 text-white/60 hover:bg-white/10"
+                    ? "bg-white/[0.12] text-white border border-white/[0.15] shadow-[0_2px_8px_rgba(0,0,0,0.3)]"
+                    : "bg-white/[0.03] text-white/45 hover:bg-white/[0.07] hover:text-white/75 border border-transparent"
                 }`}
               >
                 {c.name}
-                <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-bold ${currentTab === `cat:${c.uid}` ? "bg-black/25" : "bg-white/10"}`}>
+                <span className={`px-1 py-0.5 rounded text-[8px] font-extrabold ${currentTab === `cat:${c.uid}` ? "bg-white/15 text-white/80" : "bg-white/[0.05] text-white/30"}`}>
                   {c.total}
                 </span>
               </button>
@@ -427,7 +772,7 @@ export default function HomePage() {
           filteredChannels.length === 0 ? (
             <div className="text-center py-24 text-white/40">No channels</div>
           ) : (
-            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 2xl:grid-cols-8 gap-2 sm:gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 2xl:grid-cols-8 gap-2 sm:gap-3">
               {filteredChannels.map((ch) => (
                 <ChannelCard
                   key={ch.uid}
@@ -465,24 +810,41 @@ export default function HomePage() {
         )}
       </main>
 
+      {/* Footer */}
+      <footer className="border-t border-white/[0.04] mt-6">
+        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-5">
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-2">
+            <span className="text-xs font-bold text-white/30">LankaTV</span>
+            <span className="text-white/10 hidden sm:inline">·</span>
+            <p className="text-[10px] text-white/15">Stream anywhere. Any device. Anytime.</p>
+          </div>
+        </div>
+      </footer>
+
       {/* ── LAYER 1: EPG Schedule overlay ── */}
       {scheduleChannel && (
-        <EpgSchedule
-          channel={scheduleChannel}
-          onClose={handleCloseSchedule}
-          onPlay={handlePlayFromSchedule}
-          onCatchup={handleCatchupFromSchedule}
-        />
+        <Suspense>
+          <EpgSchedule
+            channel={scheduleChannel}
+            onClose={handleCloseSchedule}
+            onPlay={handlePlayFromSchedule}
+            onCatchup={handleCatchupFromSchedule}
+          />
+        </Suspense>
       )}
 
       {/* ── LAYER 1b: Movie/Series detail overlay ── */}
       {selectedVod && (
-        <VodDetail
-          uid={selectedVod.uid}
-          type={selectedVod.type as "movie" | "series"}
-          onClose={handleCloseVod}
-          onPlay={(uid, type, queue, meta) => handlePlayFromDetail(uid, type, queue, meta)}
-        />
+        <Suspense>
+          <VodDetail
+            uid={selectedVod.uid}
+            type={selectedVod.type as "movie" | "series"}
+            fallbackTitle={selectedVod.title}
+            fallbackPoster={selectedVod.poster}
+            onClose={handleCloseVod}
+            onPlay={(uid, type, queue, meta) => handlePlayFromDetail(uid, type, queue, meta)}
+          />
+        </Suspense>
       )}
 
       {/* ── LAYER 2: Player overlay (on top of everything) ── */}
@@ -501,25 +863,30 @@ export default function HomePage() {
             </div>
           )}
           {streamData && (
-            <VideoPlayer
-              streamUrl={streamData.url}
-              licenseUrl={streamData.license}
-              licenseFp={streamData.licenseFp}
-              title={streamMeta.title}
-              subtitle={streamMeta.subtitle}
-              bannerId={streamMeta.bannerId}
-              isLive={streamData.isLive}
-              onBack={handlePlayerBack}
-              onEnded={handlePlayerEnded}
-              nextLabel={
-                playQueue && playQueue.index < playQueue.items.length - 1
-                  ? `Next · ${playQueue.items[playQueue.index + 1].title.slice(0, 30)} (${playQueue.index + 2}/${playQueue.items.length})`
-                  : undefined
-              }
-            />
+            <Suspense>
+              <VideoPlayer
+                streamUrl={streamData.url}
+                licenseUrl={streamData.license}
+                licenseFp={streamData.licenseFp}
+                title={streamMeta.title}
+                subtitle={streamMeta.subtitle}
+                bannerId={streamMeta.bannerId}
+                isLive={streamData.isLive}
+                onBack={handlePlayerBack}
+                onEnded={handlePlayerEnded}
+                nextLabel={
+                  playQueue && playQueue.index < playQueue.items.length - 1
+                    ? `Next · ${playQueue.items[playQueue.index + 1].title.slice(0, 30)} (${playQueue.index + 2}/${playQueue.items.length})`
+                    : undefined
+                }
+              />
+            </Suspense>
           )}
         </div>
       )}
+
+      {/* Sign-in dialog */}
+      <LoginDialog open={loginOpen} onOpenChange={setLoginOpen} />
     </div>
   );
 }

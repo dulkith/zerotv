@@ -1,10 +1,7 @@
 "use client";
 
 import type { VodItem } from "@/types";
-
-function imgUrl(id: number | null): string {
-  return !id ? "" : `/api/img/${id}`;
-}
+import { imgUrl } from "@/lib/viu";
 
 function fmtDur(m: number | null): string {
   if (!m || m <= 0) return "—";

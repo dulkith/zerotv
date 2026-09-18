@@ -3,6 +3,7 @@ export interface Channel {
   name: string;
   number: string | null;
   logo: number | null;
+  normalLogo: number | null;
   resolution: string | null;
   catchup: boolean;
   catchupHours: number | null;

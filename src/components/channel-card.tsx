@@ -1,13 +1,12 @@
 "use client";
 
+import { useState } from "react";
 import type { Channel } from "@/types";
+import { imgUrl } from "@/lib/viu";
+import { Play, Calendar } from "lucide-react";
 
 interface EpgNow {
   now: { start: string; end: string; title: string; img: number | null } | null;
-}
-
-function imgUrl(id: number | null): string {
-  return !id ? "" : `/api/img/${id}`;
 }
 
 function clock(iso: string): string {
@@ -26,6 +25,7 @@ interface ChannelCardProps {
 }
 
 export function ChannelCard({ channel, epg, onWatch, onSchedule }: ChannelCardProps) {
+  const [imgLoaded, setImgLoaded] = useState(false);
   const now = epg?.now;
   const bgImg = now?.img ? imgUrl(now.img) : channel.logo ? imgUrl(channel.logo) : "";
   const hasProgramImg = !!now?.img;
@@ -50,19 +50,21 @@ export function ChannelCard({ channel, epg, onWatch, onSchedule }: ChannelCardPr
           <img
             src={bgImg}
             alt=""
-            className={`absolute inset-0 w-full h-full object-cover transition-transform duration-400 group-hover:scale-[1.08] ${hasProgramImg ? "" : "p-2"}`}
+            className={`absolute inset-0 w-full h-full object-cover transition-all duration-400 group-hover:scale-[1.08] ${hasProgramImg ? "" : "p-2 sm:p-2"} ${imgLoaded ? "opacity-100" : "opacity-0"}`}
             loading="lazy"
+            onLoad={() => setImgLoaded(true)}
           />
         )}
+        {bgImg && !imgLoaded && <div className="absolute inset-0 animate-pulse bg-white/[0.04]" />}
         <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/25 to-transparent" />
-        {hasProgramImg && channel.logo && (
-          <div className="absolute top-1.5 left-1.5 w-7 h-7 rounded-md bg-black/55 backdrop-blur-sm border border-white/15 flex items-center justify-center z-[3] p-0.5">
+        {hasProgramImg && channel.normalLogo && (
+          <div className="absolute top-1 left-1 w-12 h-12 sm:w-11 sm:h-11 z-[3]">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={imgUrl(channel.logo)} alt="" className="w-full h-full object-contain" />
+            <img src={imgUrl(channel.normalLogo)} alt="" className="w-full h-full object-contain drop-shadow-[0_1px_3px_rgba(0,0,0,0.8)]" />
           </div>
         )}
-        <span className="absolute top-2 right-2 inline-flex items-center gap-1 bg-[#ec1c24] text-white px-1.5 py-0.5 rounded-[5px] text-[8px] font-extrabold uppercase tracking-wider z-[3]">
-          <span className="w-1 h-1 rounded-full bg-white animate-pulse" /> Live
+        <span className="absolute top-2 right-2 inline-flex items-center gap-1 bg-[#ec1c24] text-white px-1.5 py-0.5 rounded-full text-[8px] font-extrabold uppercase tracking-wider z-[3] shadow-[0_0_8px_rgba(236,28,36,0.5)]">
+          <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" /> LIVE
         </span>
         {channel.number && (
           <span className="absolute bottom-1.5 right-1.5 bg-black/70 backdrop-blur-sm text-white/90 px-1.5 py-0.5 rounded-[5px] text-[9px] font-bold z-[3]">
@@ -74,27 +76,30 @@ export function ChannelCard({ channel, epg, onWatch, onSchedule }: ChannelCardPr
             <polygon points="6 4 20 12 6 20" />
           </svg>
         </div>
+        {now && (
+          <div className="absolute bottom-0 left-0 right-0 z-[5] px-2 pb-1.5 bg-gradient-to-t from-black/80 to-transparent">
+            <div className="text-[9px] font-semibold text-white/90 truncate drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
+              {now.title}
+            </div>
+            <div className="h-[2px] bg-white/20 rounded-full overflow-hidden mt-0.5">
+              <div className="h-full bg-[#ec1c24] rounded-full transition-all" style={{ width: `${pct}%` }} />
+            </div>
+            <div className="text-[7px] text-white/50 font-semibold mt-px">
+              {clock(now.start)} – {clock(now.end)}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Info */}
       <div className="px-2.5 py-2 flex flex-col gap-1 flex-1">
-        <div className="text-xs font-bold text-white leading-tight truncate">{channel.name}</div>
+        <div className="text-[11px] sm:text-xs font-bold text-white leading-tight truncate">{channel.name}</div>
         <div className="flex items-center gap-1 text-[9px] text-white/40 uppercase tracking-wide font-semibold">
           {channel.resolution && <span>{channel.resolution}</span>}
           <span>{channel.catchup ? "Catchup" : "Live"}</span>
         </div>
         {now ? (
-          <div className="mt-auto pt-1.5 border-t border-white/[0.06] min-h-[32px]">
-            <div className="text-[10px] font-semibold text-white/85 truncate">
-              <span style={{ color: "#22c55e" }}>●</span> {now.title}
-            </div>
-            <div className="flex justify-between text-[8px] text-white/40 font-semibold">
-              <span>{clock(now.start)} – {clock(now.end)}</span>
-            </div>
-            <div className="h-[2px] bg-white/[0.08] rounded-sm overflow-hidden mt-1">
-              <div className="h-full bg-[#ec1c24] transition-all" style={{ width: `${pct}%` }} />
-            </div>
-          </div>
+          <div className="mt-auto pt-1.5 border-t border-white/[0.06]" />
         ) : (
           <div className="mt-auto pt-1.5 border-t border-white/[0.06]">
             <div className="text-[9px] text-white/25 italic">No EPG data</div>
@@ -108,13 +113,13 @@ export function ChannelCard({ channel, epg, onWatch, onSchedule }: ChannelCardPr
           onClick={(e) => { e.stopPropagation(); onWatch(); }}
           className="flex-1 py-1.5 rounded-md bg-[#ec1c24] text-white text-[9px] font-bold uppercase flex items-center justify-center gap-1"
         >
-          ▶ Watch
+          <Play className="w-2.5 h-2.5 fill-current" /> Watch
         </button>
         <button
           onClick={(e) => { e.stopPropagation(); onSchedule(); }}
           className="px-2 py-1.5 rounded-md bg-white/5 border border-white/[0.08] text-white/70 text-[9px] font-bold uppercase"
         >
-          📅
+          <Calendar className="w-3 h-3" />
         </button>
       </div>
     </div>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { ArrowLeft, Copy, Check, ExternalLink, RefreshCw, Music, Tv, Trophy, Film } from "lucide-react";
+import { ArrowLeft, Copy, Check, ExternalLink, Music, Tv, Trophy, Film } from "lucide-react";
 import { getDeviceUid } from "@/lib/auth";
 
 export default function M3uPage() {
@@ -201,16 +201,6 @@ export default function M3uPage() {
             </div>
           </div>
         )}
-
-        <div className="mt-8 text-center">
-          <button
-            onClick={() => fetchToken()}
-            className="px-4 py-2 bg-white/5 hover:bg-white/10 border border-white/10 rounded-full text-xs font-bold flex items-center gap-2 mx-auto transition-colors"
-          >
-            <RefreshCw className="w-3.5 h-3.5" />
-            Refresh Token
-          </button>
-        </div>
       </main>
     </div>
   );

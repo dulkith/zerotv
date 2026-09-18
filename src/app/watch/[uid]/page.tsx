@@ -5,12 +5,9 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { VideoPlayer } from "@/components/video-player";
 import { getDeviceUid } from "@/lib/auth";
 import type { StreamToken } from "@/types";
+import { imgUrl } from "@/lib/viu";
 
 const TYPE_MAP: Record<string, string> = { c: "live", m: "movie", e: "episode", k: "movie" };
-
-function imgUrl(id: number | null): string {
-  return !id ? "" : `/api/img/${id}`;
-}
 
 export default function WatchPage() {
   const params = useParams();
@@ -89,6 +86,15 @@ export default function WatchPage() {
           }
           setMeta({ title: "Movie", subtitle: "", bannerId: null });
         } else if (ref.type === "e") {
+          const epRes = await fetch(`/api/details/series/${uid}`, { headers, signal });
+          if (epRes.ok) {
+            const d = await epRes.json();
+            if (d.episodes?.length) {
+              const ep = d.episodes.find((e: any) => e.uid === uid) || d.episodes[0];
+              setMeta({ title: `${d.title || "Series"} — S${ep.season}E${ep.number}`, subtitle: ep.title, bannerId: ep.thumb || d.poster });
+              return;
+            }
+          }
           setMeta({ title: "Episode", subtitle: "", bannerId: null });
         }
       } catch {
@@ -114,9 +120,14 @@ export default function WatchPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-black flex flex-col items-center justify-center gap-4 text-white/50">
-        <div className="w-14 h-14 border-4 border-white/10 border-t-[#ec1c24] rounded-full animate-spin" />
-        <p className="text-sm">Loading stream…</p>
+      <div className="min-h-screen bg-black" style={{ padding: "60px 24px" }}>
+        <div style={{ maxWidth: 400 }}>
+          <div className="detail-skeleton" style={{ width: 200, height: 16, borderRadius: 6, background: "rgba(255,255,255,0.06)", marginBottom: 24 }} />
+          <div className="detail-skeleton" style={{ width: 300, height: 12, borderRadius: 6, background: "rgba(255,255,255,0.05)", marginBottom: 12 }} />
+          <div className="detail-skeleton" style={{ width: 240, height: 12, borderRadius: 6, background: "rgba(255,255,255,0.05)", marginBottom: 32 }} />
+          <div className="detail-skeleton" style={{ width: 160, height: 44, borderRadius: 40, background: "rgba(255,255,255,0.06)" }} />
+        </div>
+        <style>{`@keyframes shimmer { 0%{opacity:.4} 50%{opacity:.15} 100%{opacity:.4} } .detail-skeleton { animation: shimmer 1.5s ease-in-out infinite; }`}</style>
       </div>
     );
   }

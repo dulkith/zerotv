@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useCallback, useState } from "react";
+import { imgUrl } from "@/lib/viu";
 
 interface VideoPlayerProps {
   streamUrl: string;
@@ -230,60 +231,15 @@ export function VideoPlayer({ streamUrl, licenseUrl, licenseFp, title, subtitle,
         else if (request?.getHeader) request.setHeader("x-device-uid", uid);
 
         if (drmType === "fairplay" && type === (window as any).shaka?.net?.NetworkingEngine?.RequestType?.LICENSE) {
-          if (request.body && new Uint8Array(request.body).byteLength > 0) {
-            const spcBytes = new Uint8Array(request.body);
-            let binary = "";
-            const chunk = 0x8000;
-            for (let i = 0; i < spcBytes.length; i += chunk) {
-              binary += String.fromCharCode.apply(null, Array.from(spcBytes.subarray(i, i + chunk)));
-            }
-            const spcB64 = btoa(binary);
-            const jsonBody = JSON.stringify({ spc: spcB64, assetId: capturedAssetId || "" });
-            request.body = new TextEncoder().encode(jsonBody).buffer;
-            if (request.headers) {
-              request.headers["Content-Type"] = "application/json";
-            } else if (request.setHeader) {
-              request.setHeader("Content-Type", "application/json");
-            }
-          }
+          if (request?.headers) request.headers["x-asset-id"] = capturedAssetId || "";
+          else if (request?.setHeader) request.setHeader("x-asset-id", capturedAssetId || "");
         }
       });
-
-      if (drmType === "fairplay") {
-        net.registerResponseFilter((type: any, response: any) => {
-          if (type !== (window as any).shaka?.net?.NetworkingEngine?.RequestType?.LICENSE) return;
-          if (!response?.data) return;
-          const raw = new Uint8Array(response.data);
-          if (raw.length === 0) return;
-          try {
-            const text = new TextDecoder("utf-8", { fatal: false }).decode(raw);
-            if (text.trimStart().startsWith("{")) {
-              const parsed = JSON.parse(text);
-              const ckcField = parsed.ckc || parsed.CKC || parsed.license || parsed.License || parsed.contentKeyContext || parsed.payload;
-              if (typeof ckcField === "string" && ckcField.length > 0) {
-                const bin = atob(ckcField);
-                const bytes = new Uint8Array(bin.length);
-                for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-                response.data = bytes.buffer;
-                return;
-              }
-              for (const [, v] of Object.entries(parsed)) {
-                if (typeof v === "string" && v.length > 100) {
-                  const bin = atob(v);
-                  const bytes = new Uint8Array(bin.length);
-                  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-                  response.data = bytes.buffer;
-                  return;
-                }
-              }
-            }
-          } catch {}
-        });
-      }
 
       try {
         setBootLabel(title || "Loading");
         await player.load(streamUrl);
+        if (isLive && player.goToLive) player.goToLive();
         populateQuality();
         video.muted = true;
         video.addEventListener("playing", () => { setTimeout(() => { if (video.muted) video.muted = false; }, 300); }, { once: true });
@@ -368,7 +324,7 @@ export function VideoPlayer({ streamUrl, licenseUrl, licenseFp, title, subtitle,
   }, [togglePlay, seek, toggleFs, onBack]);
 
   const progressPct = isLive || !duration ? 0 : (currentTime / duration) * 100;
-  const banner = bannerId ? `/api/img/${bannerId}` : "";
+  const banner = bannerId ? imgUrl(bannerId) : "";
 
   const handleProgressClick = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -397,12 +353,12 @@ export function VideoPlayer({ streamUrl, licenseUrl, licenseFp, title, subtitle,
         .vp-progress-current { position: absolute; inset: 0; background: #ec1c24; }
         .vp-thumb { position: absolute; left: 0; top: 50%; width: 14px; height: 14px; background: #ec1c24; border-radius: 50%; transform: translate(-50%, -50%) scale(0); transition: transform 0.15s; pointer-events: none; }
         .vp-progress:hover .vp-thumb { transform: translate(-50%, -50%) scale(1); }
-        .vp-quality-menu { position: absolute; bottom: 90px; right: 16px; min-width: 180px; max-height: 320px; overflow-y: auto; background: rgba(20,20,20,0.96); border: 1px solid rgba(255,255,255,0.12); border-radius: 14px; padding: 6px; z-index: 30; backdrop-filter: blur(10px); box-shadow: 0 10px 30px rgba(0,0,0,0.6); }
+        .vp-quality-menu { position: absolute; bottom: 90px; right: 16px; min-width: 180px; max-height: 320px; overflow-y: auto; background: rgba(20,20,20,0.96); border: 1px solid rgba(255,255,255,0.12); border-radius: 14px; padding: 6px; z-index: 30; -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); box-shadow: 0 10px 30px rgba(0,0,0,0.6); }
         .vp-qitem { padding: 10px 14px; border-radius: 8px; cursor: pointer; font-size: 14px; color: #fff; display: flex; justify-content: space-between; align-items: center; user-select: none; }
         .vp-qitem:hover { background: rgba(255,255,255,0.08); }
         .vp-qitem.active { color: #ec1c24; font-weight: 700; }
-        @media (max-width: 767px) { .vp-banner { width: 62px; height: 92px; } .vp-title { font-size: 1.15rem !important; } }
-        @media (min-width: 768px) { .vp-banner { width: 84px; height: 126px; } .vp-title { font-size: 1.75rem !important; } }
+        @media (max-width: 767px) { .vp-banner-landscape { width: 88px; height: 50px; } .vp-banner-portrait { width: 44px; height: 66px; } .vp-title { font-size: 1.15rem !important; } }
+        @media (min-width: 768px) { .vp-banner-landscape { width: 120px; height: 68px; } .vp-banner-portrait { width: 52px; height: 76px; } .vp-title { font-size: 1.75rem !important; } }
       `}</style>
 
       <video ref={videoRef} className="absolute inset-0 w-full h-full object-contain" playsInline preload="auto" />
@@ -429,7 +385,7 @@ export function VideoPlayer({ streamUrl, licenseUrl, licenseFp, title, subtitle,
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="w-[22px] h-[22px] text-white"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
           </button>
           {banner && (
-            <div className="vp-banner rounded-[10px] overflow-hidden bg-[#1a1a1a] flex-shrink-0">
+            <div className={`${isLive ? "vp-banner-landscape" : "vp-banner-portrait"} rounded-[8px] overflow-hidden bg-[#1a1a1a] flex-shrink-0`}>
               <img src={banner} className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
             </div>
           )}

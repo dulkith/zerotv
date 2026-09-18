@@ -341,7 +341,7 @@ export function httpsRequestFollow({
 }
 
 export function imgUrl(id: number | null): string {
-  return !id ? "" : `/api/img/${id}`;
+  return !id ? "" : `${DIRECT_API}/api/client/v1/global/images/${id}?accessKey=${IMG_ACCESS_KEY}`;
 }
 
 export function applyCdn(url: string): string {

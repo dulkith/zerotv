@@ -95,7 +95,7 @@ export default function AdminPage() {
             <button onClick={doLogin} disabled={loading} className="w-full py-3 bg-[#ec1c24] text-white font-bold text-sm rounded-xl disabled:opacity-50">{loading ? "Signing in…" : "Sign In"}</button>
             {loginError && <p className="text-xs text-red-400 mt-3 text-center">{loginError}</p>}
           </div>
-          <p className="text-center text-xs text-white/30 mt-6"><a href="/" className="hover:text-white/60">← Back to ZeroTV</a></p>
+          <p className="text-center text-xs text-white/30 mt-6"><a href="/" className="hover:text-white/60">← Back to LankaTV</a></p>
         </div>
       </div>
     );

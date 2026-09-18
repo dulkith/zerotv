@@ -1,8 +1,14 @@
 "use client";
 
+import { useState, useCallback } from "react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { OtpInput } from "@/components/otp-input";
 import { getDeviceUid } from "@/lib/auth";
-import { useCallback, useEffect, useState } from "react";
+
+interface LoginDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}
 
 function showToast(msg: string) {
   const t = document.createElement("div");
@@ -19,38 +25,25 @@ function showToast(msg: string) {
   }, 2500);
 }
 
-export default function LoginPage() {
+export function LoginDialog({ open, onOpenChange }: LoginDialogProps) {
   const [step, setStep] = useState<"phone" | "otp">("phone");
   const [mobile, setMobile] = useState("");
   const [maskedMobile, setMaskedMobile] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [checking, setChecking] = useState(true);
 
-  const checkAutoLogin = useCallback(async () => {
-    try {
-      const uid = await getDeviceUid();
-      const res = await fetch("/api/auth/auto-login", {
-        method: "POST",
-        headers: { "x-device-uid": uid },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.signedIn) {
-          showToast(`Signed in as ${data.mobileNumber || "you"}`);
-          setTimeout(() => {
-            window.location.href = "/";
-          }, 300);
-          return;
-        }
-      }
-    } catch { }
-    setChecking(false);
+  const reset = useCallback(() => {
+    setStep("phone");
+    setMobile("");
+    setMaskedMobile("");
+    setLoading(false);
+    setError("");
   }, []);
 
-  useEffect(() => {
-    checkAutoLogin();
-  }, [checkAutoLogin]);
+  const handleOpenChange = useCallback((val: boolean) => {
+    if (!val) reset();
+    onOpenChange(val);
+  }, [onOpenChange, reset]);
 
   const handleSendOtp = async () => {
     if (!mobile || loading) return;
@@ -93,34 +86,29 @@ export default function LoginPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Verification failed");
       showToast("Signed in successfully!");
+      onOpenChange(false);
       setTimeout(() => {
-        window.location.href = "/";
-      }, 500);
+        window.location.reload();
+      }, 300);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Verification failed");
       setLoading(false);
     }
   };
 
-  if (checking) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-[#111]">
-        <div className="w-10 h-10 border-4 border-white/10 border-t-[#ec1c24] rounded-full animate-spin" />
-      </div>
-    );
-  }
-
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 bg-[#111]">
-      <div className="w-full max-w-sm">
-        <div className="text-center mb-8">
-          <img src="/lanka_tv_logo.png" alt="LankaTV" className="h-12 mx-auto mb-3" />
-          <p className="text-sm text-white/40 mt-2">
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent className="bg-[#1c1c1c] border border-white/10">
+        <DialogHeader>
+          <DialogTitle className="text-center text-white">
+            <img src="/lanka_tv_logo.png" alt="LankaTV" className="h-10 mx-auto" />
+          </DialogTitle>
+          <DialogDescription className="text-center text-white/40 text-xs">
             Sign in with your mobile number
-          </p>
-        </div>
+          </DialogDescription>
+        </DialogHeader>
 
-        <div className="bg-[#1c1c1c] border-2 border-white/10 rounded-xl p-6">
+        <div className="pt-2">
           {step === "phone" ? (
             <>
               <label className="block text-xs font-bold text-white/50 uppercase tracking-wider mb-2">
@@ -136,7 +124,7 @@ export default function LoginPage() {
                 autoFocus
               />
               <p className="text-[11px] text-white/30 mb-4">
-                Enter your Sri Lanka  077 number
+                Enter your Sri Lanka 077 number
               </p>
               <button
                 onClick={handleSendOtp}
@@ -148,10 +136,10 @@ export default function LoginPage() {
             </>
           ) : (
             <>
-              <h2 className="text-lg font-bold text-white text-center mb-1">
+              <h2 className="text-base font-bold text-white text-center mb-1">
                 Enter code
               </h2>
-              <p className="text-xs text-white/40 text-center mb-5">
+              <p className="text-xs text-white/40 text-center mb-4">
                 6-digit code sent to{" "}
                 <b className="text-white/60">{maskedMobile}</b>
               </p>
@@ -176,13 +164,7 @@ export default function LoginPage() {
             <p className="text-xs text-red-400 mt-3 text-center">{error}</p>
           )}
         </div>
-
-        <p className="text-center text-xs text-white/30 mt-6">
-          <a href="/" className="hover:text-white/60">
-            ← Back to LankaTV
-          </a>
-        </p>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

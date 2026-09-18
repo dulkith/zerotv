@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
+import { SecurityInit } from "@/components/security-init";
 import "./globals.css";
 
 const inter = Inter({
@@ -8,8 +9,8 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "ZeroTV",
-  description: "Live TV, Movies & Series — Stream anytime",
+  title: "LankaTV",
+  description: "LankaTV — Live TV, Movies & Series. Stream on any device.",
   icons: {
     icon: [
       { url: "/favicon-96x96.png", sizes: "96x96", type: "image/png" },
@@ -28,6 +29,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" className={`${inter.variable}`}>
       <body>
+        <SecurityInit />
         {children}
       </body>
     </html>

@@ -1,5 +1,5 @@
 /**
- * ZeroTV Next.js Custom Server
+ * LankaTV Next.js Custom Server
  * Merges dplay/server.js + play-login/server.js into one process
  */
 import dotenv from "dotenv";
@@ -115,13 +115,32 @@ const STREAM_ENCRYPTION_KEY = process.env.STREAM_ENCRYPTION_KEY || "";
 const STREAM_TOKEN_TTL_MS = parseInt(process.env.STREAM_TOKEN_TTL_MS || "86400000", 10);
 const DRM_LICENSE_TTL_MS = parseInt(process.env.DRM_LICENSE_TTL_MS || "86400000", 10);
 const DRM_ALLOWED_ORIGIN = process.env.DRM_ALLOWED_ORIGIN || "";
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin-secret-change-me";
-const SOCKET_SECRET = process.env.SOCKET_SECRET || "69420";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
+const SOCKET_SECRET = process.env.SOCKET_SECRET || "";
 const LIVE_MPD_CACHE_TTL_MS = 4000;
 const VOD_MPD_CACHE_TTL_MS = 60000;
 const MAX_SOCKETS_PER_HOST = 20;
 const SOCKET_RESOLVE_TIMEOUT_MS = 15000;
 const CONCURRENT_EPG_BATCH = 6;
+
+// ── Rate limiting (simple in-memory) ────────────────────────────
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+function rateLimit(key: string, max: number, windowMs: number): boolean {
+  const now = Date.now();
+  const entry = rateLimitMap.get(key);
+  if (!entry || now > entry.resetAt) {
+    rateLimitMap.set(key, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+  if (entry.count >= max) return false;
+  entry.count++;
+  return true;
+}
+// Cleanup every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of rateLimitMap) { if (now > v.resetAt) rateLimitMap.delete(k); }
+}, 5 * 60 * 1000);
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 if (!fs.existsSync(CATEGORIES_DIR)) fs.mkdirSync(CATEGORIES_DIR, { recursive: true });
@@ -677,6 +696,7 @@ function projectChannel(ch: Record<string, unknown>) {
     name: String(ch.name || ch.title || "").trim() || "Channel",
     number: ch.epg_channel || null,
     logo: pickLogo(ch.logos as Record<string, unknown> | null),
+    normalLogo: (ch.logos as Record<string, unknown> | null)?.NORMAL as number || null,
     resolution: ch.resolution || null,
     catchup: !!ch.timeshiftable,
     catchupHours: ch.ts_rec_duration || ch.rec_duration || null,
@@ -963,7 +983,7 @@ function buildXmltv(channels: Array<Record<string, unknown>>, programs: Array<Re
   const L: string[] = [];
   L.push('<?xml version="1.0" encoding="UTF-8"?>');
   L.push("<!DOCTYPE tv SYSTEM \"xmltv.dtd\">");
-  L.push('<tv generator-info-name="ZeroTV">');
+  L.push('<tv generator-info-name="LankaTV">');
   for (const c of channels) {
     const id = c.id || c.channel_id;
     if (!id) continue;
@@ -1572,12 +1592,40 @@ setInterval(() => {
 const expressApp = express();
 
 // CORS
+const CORS_ORIGIN = process.env.CORS_ORIGIN || "";
 expressApp.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  const origin = CORS_ORIGIN || req.headers.origin || "*";
+  res.setHeader("Access-Control-Allow-Origin", origin);
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD");
-  res.setHeader("Access-Control-Allow-Headers", "*");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-device-uid, x-asset-id");
   res.setHeader("Access-Control-Expose-Headers", "*");
   if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
+
+// Security headers
+expressApp.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()");
+  if (req.headers.accept && req.headers.accept.includes("text/html")) {
+    res.setHeader(
+      "Content-Security-Policy",
+      [
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: blob: https://api2.viu.lk https://*.viu.lk",
+        "media-src 'self' blob: https://bpcdn.dialog.lk https://*.dialog.lk https://*.viu.lk",
+        "font-src 'self' data:",
+        "connect-src 'self' https://api2.viu.lk https://*.viu.lk https://bpcdn.dialog.lk https://*.dialog.lk wss: ws:",
+        "frame-ancestors 'self'",
+        "base-uri 'self'",
+      ].join("; ")
+    );
+  }
+  res.removeHeader("X-Powered-By");
   next();
 });
 
@@ -1719,6 +1767,7 @@ saveLoginTokens(device, r.data, saved?.mobileNumber as string | null, { live: r.
 expressApp.post("/api/auth/send-otp", (req, res) => {
   const deviceUid = req.headers["x-device-uid"] as string;
   if (!deviceUid) return res.status(400).json({ error: "Missing device" });
+  if (!rateLimit(`otp:${deviceUid}`, 5, 60000)) return res.status(429).json({ error: "Too many requests. Wait a minute." });
   const rawMobile = (req.body || {}).mobileNumber;
   const check = normalizeMobile(rawMobile);
   if (!check.ok) return res.status(400).json({ error: check.error });
@@ -1737,6 +1786,7 @@ expressApp.post("/api/auth/send-otp", (req, res) => {
 expressApp.post("/api/auth/verify-otp", async (req, res) => {
   const deviceUid = req.headers["x-device-uid"] as string;
   if (!deviceUid) return res.status(400).json({ error: "Missing device" });
+  if (!rateLimit(`verify:${deviceUid}`, 10, 300000)) return res.status(429).json({ error: "Too many attempts. Try again later." });
   const device = getOrCreateDevice(deviceUid);
   const { mobileNumber: rawMobile, otpCode } = req.body || {};
   const check = normalizeMobile(rawMobile);
@@ -1817,7 +1867,7 @@ expressApp.post("/api/auth/verify-otp", async (req, res) => {
         mobileNumber: check.number!,
         signedIn: true,
       });
-      res.setHeader("Set-Cookie", `session=${sessionToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 24 * 3600}`);
+      res.setHeader("Set-Cookie", `session=${sessionToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 24 * 3600}${process.env.COOKIE_SECURE ? "; Secure" : ""}`);
       return res.json({ ok: true, signedIn: true, mobileNumber: maskMobile(check.number!) });
     }
 
@@ -2449,7 +2499,8 @@ function requireStreamAuth(req: express.Request, res: express.Response, next: ex
       const latest = loadLatestTokens(payload.deviceUid);
       if (latest && isRefreshTokenValid(latest)) {
         const newToken = createSessionToken(payload);
-        res.setHeader("Set-Cookie", `session=${newToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 24 * 3600}`);
+      res.setHeader("Set-Cookie", `session=${newToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 24 * 3600}${process.env.COOKIE_SECURE ? "; Secure" : ""}`);
+
         (req as Record<string, unknown>).session = payload;
         (req as Record<string, unknown>).deviceUid = payload.deviceUid;
         return next();
@@ -2487,20 +2538,12 @@ expressApp.all("/api/drm/:token", (req, res) => {
     const deviceUid = info.deviceUid || "";
     const latest = loadLatestTokens(deviceUid);
 
-    // For FairPlay: client sends JSON { spc, assetId }
-    let fpAssetId = info.assetId || "";
-    let fpSpcB64 = "";
-    if (isFairPlay && body.length > 0) {
-      try {
-        const parsed = JSON.parse(body.toString("utf8"));
-        if (parsed.assetId) fpAssetId = parsed.assetId;
-        if (parsed.spc) fpSpcB64 = parsed.spc;
-      } catch {}
-    }
+    // For FairPlay: client sends raw SPC binary + x-asset-id header
+    const fpAssetId = (req.headers["x-asset-id"] as string) || info.assetId || "";
 
     // Helper: proxy FairPlay license request
     function proxyFairPlay(licenseUrl: string, accessToken: string) {
-      const spcB64 = fpSpcB64 || body.toString("base64");
+      const spcB64 = body.toString("base64");
       const jsonBody = JSON.stringify({ spc: spcB64, assetId: fpAssetId });
       const parsed = new URL(licenseUrl);
       log(`[drm-fp] proxying to ${parsed.hostname} kind=${info.kind} assetId=${fpAssetId} body=${body.length}b`);
@@ -2616,8 +2659,6 @@ expressApp.all("/api/drm/:token", (req, res) => {
       ensureDeviceAccessToken(deviceUid).then(async (token) => {
         if (!token) return res.status(502).json({ error: "no access token" });
         const updated = loadLatestTokens(deviceUid);
-        const userId = String(updated?.user_id || "918558");
-        const contentUid = info.contentUid || "";
 
         let licenseUrl = info.kind === "tv"
           ? (updated?.fp_license_proxy_url_live as string) || null
@@ -2719,7 +2760,7 @@ expressApp.get("/movies.m3u", requireDeviceAuth, (req, res) => {
   res.setHeader("Content-Type", "audio/x-mpegurl; charset=utf-8");
   res.setHeader("Content-Disposition", 'inline; filename="movies.m3u"');
   res.send(
-    `#EXTM3U\n# ZeroTV Movies — ${items.length}\n# ${new Date().toISOString()}\n` +
+    `#EXTM3U\n# LankaTV Movies — ${items.length}\n# ${new Date().toISOString()}\n` +
       (items as Array<Record<string, unknown>>).map((i) => buildMovieEntry(i, base, deviceUid)).join("")
   );
 });
@@ -2732,7 +2773,7 @@ expressApp.get("/live.m3u", requireDeviceAuth, (req, res) => {
   const epgToken = issueEpgToken(deviceUid);
   const channels = flattenChannels(cj);
   const epg = `${base}/epg.xml.gz?token=${epgToken}`;
-  const parts = [`#EXTM3U x-tvg-url="${epg}" url-tvg="${epg}"\n# ZeroTV Live\n# ${new Date().toISOString()}\n`];
+  const parts = [`#EXTM3U x-tvg-url="${epg}" url-tvg="${epg}"\n# LankaTV Live\n# ${new Date().toISOString()}\n`];
   for (const ch of channels) {
     const e = buildLiveEntry(ch, base, deviceUid);
     if (e) parts.push(e);
@@ -2764,7 +2805,7 @@ expressApp.get("/sports.m3u", requireDeviceAuth, (req, res) => {
   res.setHeader("Content-Type", "audio/x-mpegurl; charset=utf-8");
   res.setHeader("Content-Disposition", 'inline; filename="sports.m3u"');
   res.send(
-    `#EXTM3U\n# ZeroTV Sports — ${items.length}\n# ${new Date().toISOString()}\n` +
+    `#EXTM3U\n# LankaTV Sports — ${items.length}\n# ${new Date().toISOString()}\n` +
       (items as Array<Record<string, unknown>>).map((i) => buildMovieEntry(i, base, deviceUid)).join("")
   );
 });
@@ -2775,7 +2816,7 @@ expressApp.get("/series.m3u", requireDeviceAuth, (req, res) => {
   const idx = loadCategoriesIndex();
   if (!idx || !Array.isArray(idx.data)) return res.status(503).type("text/plain").send("#EXTM3U\n# not ready\n");
   const seen = new Set<string>();
-  const parts: string[] = [`#EXTM3U\n# ZeroTV Series\n# ${new Date().toISOString()}\n`];
+  const parts: string[] = [`#EXTM3U\n# LankaTV Series\n# ${new Date().toISOString()}\n`];
   let epCount = 0;
   for (const cat of idx.data) {
     const file = loadCategoryFile(cat.id);
@@ -2812,7 +2853,7 @@ expressApp.get("/series.m3u", requireDeviceAuth, (req, res) => {
   }
   res.setHeader("Content-Type", "audio/x-mpegurl; charset=utf-8");
   res.setHeader("Content-Disposition", 'inline; filename="series.m3u"');
-  parts[0] = `#EXTM3U\n# ZeroTV Series — ${epCount} episodes\n# ${new Date().toISOString()}\n`;
+  parts[0] = `#EXTM3U\n# LankaTV Series — ${epCount} episodes\n# ${new Date().toISOString()}\n`;
   res.send(parts.join(""));
 });
 
@@ -3043,7 +3084,13 @@ expressApp.delete("/admin/devices/:uuid", adminAuthMiddleware, (req, res) => {
 // ── TOKENS CRUD ─────────────────────────────────────────────
 expressApp.get("/admin/tokens", adminAuthMiddleware, (req, res) => {
   try {
-    const tokens = getAllTokens();
+    const tokens = getAllTokens().map((t: Record<string, unknown>) => ({
+      user_id: t.user_id,
+      expires_at: t.expires_at,
+      mobileNumber: t.mobileNumber ? maskMobile(String(t.mobileNumber)) : undefined,
+      has_access: !!t.access_token,
+      has_refresh: !!t.refresh_token,
+    }));
     res.json({ ok: true, count: tokens.length, tokens });
   } catch (e) { res.status(500).json({ error: (e as Error).message }); }
 });
@@ -3593,7 +3640,7 @@ async function main() {
   server.listen(PORT, "0.0.0.0", () => {
     console.log("");
     console.log("  ┌───────────────────────────────────────────────────────────┐");
-    console.log("  │   ZeroTV Next.js — SECURE + HARDENED DRM                │");
+    console.log("  │   LankaTV Next.js — SECURE + HARDENED DRM                │");
     console.log("  ├───────────────────────────────────────────────────────────┤");
     console.log(`  │  Listening:        http://localhost:${String(PORT).padEnd(22)}│`);
     console.log(`  │  Legacy streams:   ${String(ALLOW_LEGACY_STREAMS).padEnd(39)}│`);
