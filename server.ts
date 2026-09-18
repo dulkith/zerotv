@@ -851,38 +851,11 @@ async function rebuildAllCategories() {
 async function refreshChannelsFile() {
   const token = await getToken();
   const j = await fetchChannelsFromViu(token);
-  if (Array.isArray((j as any).data)) {
-    for (const ch of (j as any).data) {
-      if (!ch.category) ch.category = guessChannelCategory(ch);
-    }
-  }
   fs.writeFileSync(CHANNELS_FILE, JSON.stringify(j, null, 2), "utf8");
   saveChannelsSync(j as unknown as Record<string, unknown>);
   const n = Array.isArray((j as Record<string, unknown>).data) ? ((j as Record<string, unknown>).data as unknown[]).length : 0;
   log(`[refresh] channels.json — ${n}`);
   return { count: n, updatedAt: new Date().toISOString() };
-}
-
-function guessChannelCategory(ch: Record<string, unknown>): string {
-  const name = String(ch.name || "").toLowerCase();
-  const id = ch.id as number;
-  const uid = String(ch.uid || "").toLowerCase();
-  if (/sport|cricket|tennis|eurosport|thepapare|premier sport|star sport|sony sport/.test(name)) return "Sports";
-  if ([70,71,72,73,74,75,76,85,126,127,128,129,130,131,132,133,2082,2084,2126,2236,2380,2381,2382].includes(id)) return "Sports";
-  if (/al jazeera|bbc|cnn|ndtv|cgtn|dw|trt|france 24|euro news|rai|phoenix|tv5/.test(name)) return "News";
-  if ([36,37,38,39,40,41,42,43,1831,1833,1834,1835,1836].includes(id)) return "News";
-  if (/cartoon|nick|disney|kids|cbeebies|baby|pogo|moonbug|da vinci/.test(name)) return "Kids";
-  if ([51,52,53,54,55,56,58,68,2086].includes(id)) return "Kids";
-  if (/hbo|cinemax|flix|pix|movie|cinema|warner|café|set max|colors cineplex|hits now|rock action|rock ent/.test(name)) return "English Entertainment";
-  if (/star plus|colors[^a-z]|zee cinema|star gold|sony set|b4u movie|zee café|comedy zone|star bharat/.test(name)) return "Hindi Entertainment";
-  if (/vijay|zee tamil|kalaignar|jaya|sirippoli|zee thirai|colors tamil/.test(name)) return "Tamil Entertainment";
-  if (/discovery|nat geo|animal planet|tlc|history|hgtv|food network|bbc earth|discovery sci|discovery turbo/.test(name)) return "Edutainment";
-  if ([2,8,59,60,61,62,63,64,67,69,90,116,2085].includes(id)) return "Edutainment";
-  if (/b4u music|romantico|channel c|jaya max|zing|fashion/.test(name)) return "Music";
-  if (/nenasa|education/.test(name)) return "Educational";
-  if (/buddhist|shraddha|god tv|swarga|ewtn/.test(name)) return "Religious";
-  if ([32,33,34,35].includes(id)) return "Religious";
-  return "Local";
 }
 
 // ================================================================

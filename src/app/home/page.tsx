@@ -342,13 +342,13 @@ export default function HomeAppPage() {
 
   const [liveCategory, setLiveCategory] = useState("All");
 
-  const CATEGORY_ORDER = ["Local", "Sports", "Religious", "Edutainment", "English Entertainment", "Hindi Entertainment", "Kids", "Music", "Tamil Entertainment", "Educational", "News", "Others"];
-  const liveCategories = CATEGORY_ORDER.filter((cat) => channels.some((c) => (c.category || "Others") === cat));
+  const CATEGORY_ORDER = ["local", "sports", "religious", "edutainment", "english entertainment", "hindi entertainment", "kids", "music", "tamil entertainment", "educational", "news", "others"];
+  const liveCategories = CATEGORY_ORDER.filter((cat) => channels.some((c) => (c.category || "others") === cat));
   const filteredChannels = search
     ? channels.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()))
     : liveCategory === "All"
       ? channels
-      : channels.filter((c) => (c.category || "Others") === liveCategory);
+      : channels.filter((c) => (c.category || "others") === liveCategory);
 
   const activeCatUid = currentTab.startsWith("cat:") ? currentTab.slice(4) : null;
   const activeCat = categories.find((c) => c.uid === activeCatUid);
@@ -467,7 +467,7 @@ export default function HomeAppPage() {
             <>
               <div className="flex gap-1.5 items-center mb-4 overflow-x-auto no-scrollbar pb-1">
                 {["All", ...liveCategories].map((cat) => {
-                  const count = cat === "All" ? channels.length : channels.filter((c) => (c.category || "Others") === cat).length;
+                  const count = cat === "All" ? channels.length : channels.filter((c) => (c.category || "others") === cat).length;
                   return (
                     <button
                       key={cat}
