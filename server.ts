@@ -1407,7 +1407,9 @@ function proxyDrm(req: express.Request, res: express.Response, targetUrl: string
 // ================================================================
 async function serverResolve(originalUrl: string, maxHops = 6): Promise<{ url: string; statusCode: number; headers: Record<string, string> }> {
   let currentUrl = originalUrl;
+  const deadline = Date.now() + 10000;
   for (let hop = 1; hop <= maxHops; hop++) {
+    if (Date.now() > deadline) throw new Error("resolve timeout");
     const u = new URL(currentUrl);
     const headers = { "user-agent": USER_AGENT, accept: "*/*", origin: VIU_ORIGIN, referer: VIU_REFERER };
     let res = await httpsRequestFollow({
@@ -2266,6 +2268,8 @@ expressApp.get("/api/stream/trailer/:uid", requireStreamAuth, async (req, res) =
 
 // ── STREAM PROXY (AUTH REQUIRED) ────────────────────────────
 expressApp.all("/api/stream/t/:token", async (req, res) => {
+  let host = "bpcdn.dialog.lk";
+  let rest = "/";
   try {
     const tokenPart = req.params.token;
     let decrypted: string;
@@ -2280,8 +2284,8 @@ expressApp.all("/api/stream/t/:token", async (req, res) => {
 
     const stripped = pathOnly.replace(/^\//, "");
     const first = stripped.split("/")[0];
-    let host = "bpcdn.dialog.lk";
-    let rest = "/" + stripped;
+    host = "bpcdn.dialog.lk";
+    rest = "/" + stripped;
     if (first && first.includes(".dialog.lk")) {
       host = first;
       rest = "/" + stripped.split("/").slice(1).join("/");
@@ -2320,9 +2324,13 @@ expressApp.all("/api/stream/t/:token", async (req, res) => {
         try {
           const r = await serverResolve(originalUrl);
           resolved = { finalUrl: r.url, httpStatus: r.statusCode, hops: 1, contentType: "" };
-        } catch {}
+        } catch (e) { log(`[stream-hls] serverResolve failed: ${(e as Error).message}`); }
       }
-      if (!resolved) return res.status(502).json({ error: "hls resolve failed" });
+      if (!resolved) {
+        log(`[stream-hls] resolve failed, redirecting to CDN`);
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        return res.redirect(302, `https://${applyCdn(host)}${hlsRest}`);
+      }
       const cdnUrl = applyCdn(resolved.finalUrl);
       const u2 = new URL(cdnUrl);
       const up = await httpsRequestFollow({
@@ -2398,11 +2406,17 @@ expressApp.all("/api/stream/t/:token", async (req, res) => {
       try {
         const r = await serverResolve(originalUrl);
         resolved = { finalUrl: r.url, httpStatus: r.statusCode, hops: 1, contentType: "" };
-      } catch {}
+      } catch (e) { log(`[stream] serverResolve failed for ${host}${rest.substring(0, 60)}: ${(e as Error).message}`); }
     } else if (!resolved && !SERVER_FALLBACK_RESOLVE) {
-      return res.status(503).json({ error: "no resolver" });
+      log(`[stream] no resolver available, redirecting to CDN for ${host}${rest.substring(0, 60)}`);
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      return res.redirect(302, `https://${applyCdn(host)}${rest}`);
     }
-    if (!resolved) return res.status(502).json({ error: "resolve failed" });
+    if (!resolved) {
+      log(`[stream] resolve failed, redirecting to CDN for ${host}${rest.substring(0, 60)}`);
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      return res.redirect(302, `https://${applyCdn(host)}${rest}`);
+    }
 
     if (LIVE_REDIRECT && isLive) {
       const target = applyCdn(resolved.finalUrl);
@@ -2411,7 +2425,14 @@ expressApp.all("/api/stream/t/:token", async (req, res) => {
     }
 
     const cdnUrl = applyCdn(resolved.finalUrl);
-    const u2 = new URL(cdnUrl);
+    let u2: URL;
+    try {
+      u2 = new URL(cdnUrl);
+    } catch (e) {
+      log(`[stream] bad CDN URL: ${cdnUrl}`);
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      return res.redirect(302, `https://${applyCdn(host)}${rest}`);
+    }
     const up = await httpsRequestFollow({
       method: "GET",
       hostname: u2.hostname,
@@ -2425,13 +2446,15 @@ expressApp.all("/api/stream/t/:token", async (req, res) => {
       },
     });
     if (up.statusCode !== 200 && up.statusCode !== 206) {
-      res.status(up.statusCode);
-      return res.send(up.body);
+      log(`[stream] upstream ${up.statusCode} for ${cdnUrl.substring(0, 80)}, redirecting to CDN`);
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      return res.redirect(302, cdnUrl);
     }
     let xml = (up.body || Buffer.from("")).toString("utf8");
     if (!/^\s*<\?xml|<MPD/i.test(xml)) {
-      res.setHeader("Content-Type", up.headers["content-type"] || "text/html");
-      return res.send(xml);
+      log(`[stream] non-MPD response (${xml.substring(0, 80)}), redirecting to CDN`);
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      return res.redirect(302, cdnUrl);
     }
 
     const baseMatch = xml.match(/<BaseURL>([^<]+)<\/BaseURL>/);
@@ -2479,7 +2502,11 @@ expressApp.all("/api/stream/t/:token", async (req, res) => {
     res.setHeader("Cache-Control", "no-cache");
     res.send(xml);
   } catch (err) {
-    if (!res.headersSent) res.status(502).json({ error: "stream fail" });
+    log(`[stream] error: ${(err as Error)?.message || err}`);
+    if (!res.headersSent) {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.redirect(302, `https://${applyCdn(host)}${rest}`);
+    }
   }
 });
 
