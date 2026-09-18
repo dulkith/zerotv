@@ -1,5 +1,4 @@
 import type { NextConfig } from "next";
-import WebpackObfuscator from "webpack-obfuscator";
 
 const nextConfig: NextConfig = {
   images: {
@@ -9,31 +8,6 @@ const nextConfig: NextConfig = {
   },
   poweredByHeader: false,
   productionBrowserSourceMaps: false,
-  webpack: (config, { dev, isServer }) => {
-    if (!dev && !isServer) {
-      config.plugins.push(
-        new WebpackObfuscator({
-          compact: true,
-          controlFlowFlattening: true,
-          controlFlowFlatteningThreshold: 0.3,
-          deadCodeInjection: true,
-          deadCodeInjectionThreshold: 0.15,
-          debugProtection: false,
-          disableConsoleOutput: false,
-          identifierNamesGenerator: "mangled",
-          renameGlobals: false,
-          selfDefending: false,
-          stringArray: true,
-          stringArrayEncoding: ["base64"],
-          stringArrayThreshold: 0.75,
-          stringConcealing: true,
-          transformObjectKeys: true,
-          unicodeEscapeSequence: false,
-        })
-      );
-    }
-    return config;
-  },
 };
 
 export default nextConfig;
