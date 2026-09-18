@@ -2443,18 +2443,13 @@ expressApp.all("/api/stream/t/:token", async (req, res) => {
       return res.redirect(302, `https://${applyCdn(host)}${rest}`);
     }
 
-    if (isLive || isVod) {
+    if (isLive || isVod || isCatchup) {
       if (LIVE_REDIRECT) {
         const target = applyCdn(resolved.finalUrl);
-        log(`[stream] redirecting to CDN (${isVod ? "vod" : "live"}) ${target.substring(0, 80)}`);
+        log(`[stream] redirecting to CDN (${isCatchup ? "catchup" : isVod ? "vod" : "live"}) ${target.substring(0, 80)}`);
         res.setHeader("Access-Control-Allow-Origin", "*");
         return res.redirect(302, target);
       }
-    }
-    if (isCatchup && !resolverBody) {
-      log(`[stream] catchup needs body but no resolver body, redirecting to CDN`);
-      res.setHeader("Access-Control-Allow-Origin", "*");
-      return res.redirect(302, applyCdn(resolved.finalUrl));
     }
 
     const cdnUrl = applyCdn(resolved.finalUrl);
