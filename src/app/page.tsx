@@ -75,11 +75,6 @@ export default function HomePage() {
   const [loginOpen, setLoginOpen] = useState(false);
   const [showLanding, setShowLanding] = useState(true);
   const [copyrightAcknowledged, setCopyrightAcknowledged] = useState(false);
-  const [contactOpen, setContactOpen] = useState(false);
-  const [contactName, setContactName] = useState("");
-  const [contactMessage, setContactMessage] = useState("");
-  const [contactSending, setContactSending] = useState(false);
-  const [contactSent, setContactSent] = useState(false);
 
   // Overlay layers
   const [scheduleChannel, setScheduleChannel] = useState<Channel | null>(null);
@@ -590,71 +585,16 @@ export default function HomePage() {
               <p>Please contact me directly. <span className="text-[#ec1c24] font-medium">I will not hesitate to take down or stop the site immediately.</span> A single request from you is more than enough — I will stop it right away because I truly respect your rights and work.</p>
             </div>
 
-            {contactSent ? (
-              <div className="text-center py-4 rounded-xl bg-[#22c55e]/10 border border-[#22c55e]/20 mb-4">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-8 h-8 text-[#22c55e] mx-auto mb-2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-                <p className="text-[#22c55e] font-bold text-sm">Message sent!</p>
-                <p className="text-white/40 text-xs mt-1">We will get back to you shortly.</p>
-              </div>
-            ) : contactOpen ? (
-              <div className="space-y-3 mb-4">
-                <input
-                  type="text"
-                  placeholder="Your Name (optional)"
-                  value={contactName}
-                  onChange={(e) => setContactName(e.target.value)}
-                  className="w-full px-4 py-3 rounded-xl bg-white/[0.05] border border-white/[0.08] text-white text-sm placeholder:text-white/25 outline-none focus:border-[#22c55e]/40 transition-colors"
-                />
-                <textarea
-                  placeholder="Your message..."
-                  rows={4}
-                  value={contactMessage}
-                  onChange={(e) => setContactMessage(e.target.value)}
-                  className="w-full px-4 py-3 rounded-xl bg-white/[0.05] border border-white/[0.08] text-white text-sm placeholder:text-white/25 outline-none focus:border-[#22c55e]/40 transition-colors resize-none"
-                />
-                <div className="flex gap-3">
-                  <button
-                    onClick={async () => {
-                      if (!contactMessage.trim()) return;
-                      setContactSending(true);
-                      try {
-                        await fetch("/api/telegram", {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ name: contactName || "Anonymous", message: contactMessage }),
-                        });
-                        setContactSent(true);
-                      } catch {
-                        // ignore
-                      } finally {
-                        setContactSending(false);
-                      }
-                    }}
-                    disabled={contactSending || !contactMessage.trim()}
-                    className="flex-1 py-3 rounded-xl bg-[#22c55e] text-white font-bold text-sm hover:bg-[#1fa84e] transition-all disabled:opacity-40 flex items-center justify-center gap-2"
-                  >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-                    {contactSending ? "Sending..." : "Send"}
-                  </button>
-                  <button
-                    onClick={() => { setContactOpen(false); setContactMessage(""); setContactName(""); }}
-                    className="px-6 py-3 rounded-xl bg-white/[0.05] text-white/50 font-medium text-sm border border-white/[0.08] hover:bg-white/[0.08] transition-all"
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            ) : null}
-
-            {!contactOpen && !contactSent && (
-              <div className="flex flex-col sm:flex-row gap-3">
-                <button
-                  onClick={() => setContactOpen(true)}
+            <div className="flex flex-col sm:flex-row gap-3">
+                <a
+                  href="https://t.me/yakalk_bot?text=hello"
+                  target="_blank"
+                  rel="noopener noreferrer"
                   className="flex-1 py-3 rounded-xl bg-[#22c55e]/10 text-[#22c55e] font-bold text-sm border border-[#22c55e]/30 hover:bg-[#22c55e]/20 hover:border-[#22c55e]/50 transition-all flex items-center justify-center gap-2"
                 >
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
                   Contact
-                </button>
+                </a>
                 <button
                   onClick={() => setCopyrightAcknowledged(true)}
                   className="flex-1 py-3 rounded-xl bg-[#ec1c24]/10 text-[#ec1c24] font-bold text-sm border border-[#ec1c24]/30 hover:bg-[#ec1c24]/20 hover:border-[#ec1c24]/50 transition-all"
@@ -662,7 +602,6 @@ export default function HomePage() {
                   I Understand &amp; Continue
                 </button>
               </div>
-            )}
           </div>
         </div>
       )}
@@ -689,7 +628,7 @@ export default function HomePage() {
               M3U
             </a>
             <a
-              href="https://t.me/yakalk_bot"
+              href="https://t.me/yakalk_bot?text=hello"
               target="_blank"
               rel="noopener noreferrer"
               className="text-xs text-[#22c55e] hover:text-white transition-all px-3 py-1.5 rounded-lg border border-[#22c55e]/20 hover:border-[#22c55e]/50 hover:bg-[#22c55e]/10 font-semibold flex items-center gap-1.5"
