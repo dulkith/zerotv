@@ -2433,18 +2433,26 @@ expressApp.all("/api/stream/t/:token", async (req, res) => {
       res.setHeader("Access-Control-Allow-Origin", "*");
       return res.redirect(302, `https://${applyCdn(host)}${rest}`);
     }
-    const up = await httpsRequestFollow({
-      method: "GET",
-      hostname: u2.hostname,
-      path: u2.pathname + u2.search,
-      headers: {
-        origin: VIU_ORIGIN,
-        referer: VIU_REFERER,
-        "user-agent": USER_AGENT,
-        accept: "*/*",
-        ...(req.headers.range ? { range: req.headers.range as string } : {}),
-      },
-    });
+
+    let up: { statusCode: number; headers: Record<string, string>; body?: Buffer };
+    try {
+      up = await httpsRequestFollow({
+        method: "GET",
+        hostname: u2.hostname,
+        path: u2.pathname + u2.search,
+        headers: {
+          origin: VIU_ORIGIN,
+          referer: VIU_REFERER,
+          "user-agent": USER_AGENT,
+          accept: "*/*",
+          ...(req.headers.range ? { range: req.headers.range as string } : {}),
+        },
+      });
+    } catch (e) {
+      log(`[stream] fetch failed for ${cdnUrl.substring(0, 80)}: ${(e as Error).message}, redirecting to CDN`);
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      return res.redirect(302, cdnUrl);
+    }
     if (up.statusCode !== 200 && up.statusCode !== 206) {
       log(`[stream] upstream ${up.statusCode} for ${cdnUrl.substring(0, 80)}, redirecting to CDN`);
       res.setHeader("Access-Control-Allow-Origin", "*");
@@ -2487,8 +2495,10 @@ expressApp.all("/api/stream/t/:token", async (req, res) => {
       const psshKey = isCatchup ? `${channelKey}:${extractBeginFromUrl(rest) || ""}:${extractEndFromUrl(rest) || ""}` : `vod:${channelKey}`;
       pssh = psshCacheGet(psshKey);
       if (!pssh) {
-        pssh = await fetchPsshFromAudio(cdnUrl, Buffer.from(xml, "utf8"));
-        if (pssh) psshCacheSet(psshKey, pssh);
+        try {
+          pssh = await fetchPsshFromAudio(cdnUrl, Buffer.from(xml, "utf8"));
+          if (pssh) psshCacheSet(psshKey, pssh);
+        } catch (e) { log(`[stream] pssh fetch failed: ${(e as Error).message}`); }
       }
     }
     xml = rewriteBaseUrl(xml, newBaseFinal);
