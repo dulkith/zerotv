@@ -927,8 +927,9 @@ async function fetchEpgPerChannel(channels: Array<Record<string, unknown>>, s: s
 function parseEpgPrograms(data: Record<string, unknown>) {
   const out: Array<Record<string, unknown>> = [];
   for (const entry of (data.data || []) as Array<Record<string, unknown>>) {
-    const ch = entry.id;
-    if (!ch) continue;
+    const rawCh = entry.id;
+    if (!rawCh) continue;
+    const ch = makeUidLocal("c", rawCh);
     for (const s of (entry.shows || []) as Array<Record<string, unknown>>) {
       if (!s.start || !s.end) continue;
       let sd: Date, ed: Date;
@@ -985,9 +986,10 @@ function buildXmltv(channels: Array<Record<string, unknown>>, programs: Array<Re
   L.push("<!DOCTYPE tv SYSTEM \"xmltv.dtd\">");
   L.push('<tv generator-info-name="LankaTV">');
   for (const c of channels) {
-    const id = c.id || c.channel_id;
-    if (!id) continue;
-    L.push(`  <channel id="${xmlEsc(id)}"><display-name>${xmlEsc(c.name || "")}</display-name></channel>`);
+    const rawId = c.id || c.channel_id;
+    if (!rawId) continue;
+    const uid = makeUidLocal("c", rawId);
+    L.push(`  <channel id="${xmlEsc(uid)}"><display-name>${xmlEsc(c.name || "")}</display-name></channel>`);
   }
   for (const p of programs) {
     L.push(`  <programme start="${xmltvTime(String(p.start))}" stop="${xmltvTime(String(p.end))}" channel="${xmlEsc(p.ch)}">`);
@@ -1497,16 +1499,18 @@ function buildLiveEntry(ch: Record<string, unknown>, base: string, deviceUid?: s
   const logoId = pickLogo(ch.logos as Record<string, unknown> | null);
   const logo = logoId ? `${base}/api/img/${logoId}` : "";
   const title = escapeM3U(String(ch.name || ""));
-  const isCatchup = !!ch.timeshiftable;
+  const isCatchup = !!ch.timeshiftable || !!ch.epg_channel;
   const days = ch.ts_rec_duration || ch.rec_duration || 72;
+  const catchupUrl = `${stream}?begin=\${start}&end=\${end}`;
 
   let e = `#EXTINF:-1 tvg-id="${uid}" tvg-name="${title}" tvg-logo="${logo}"`;
   if (ch.epg_channel) e += ` tvg-chno="${escapeM3U(String(ch.epg_channel))}"`;
+  if (isCatchup) e += ` catchup="default" catchup-source="${catchupUrl}" catchup-days="${days}"`;
   e += ` group-title="Live TV",${title}\n`;
   e += `#EXTGRP:Live TV\n`;
   if (isCatchup) {
-    e += `#EXT-X-PLAYLIST-TYPE:catchup\n`;
-    e += `#KODIPROP:catchup-source=${stream}?begin=\${start}&end=\${end}\n`;
+    e += `#EXT-X-PLAYLIST-TYPE:VOD\n`;
+    e += `#KODIPROP:catchup=${stream}?begin=\${start}&end=\${end}\n`;
     e += `#KODIPROP:catchup-days=${days}\n`;
     e += `#KODIPROP:catchup-correction=0\n`;
     e += `#EXTVLCOPT:catchup=default\n`;
@@ -2332,18 +2336,28 @@ expressApp.all("/api/stream/t/:token", async (req, res) => {
         return res.redirect(302, `https://${applyCdn(host)}${hlsRest}`);
       }
       const cdnUrl = applyCdn(resolved.finalUrl);
-      const u2 = new URL(cdnUrl);
-      const up = await httpsRequestFollow({
-        method: "GET",
-        hostname: u2.hostname,
-        path: u2.pathname + u2.search,
-        headers: { origin: VIU_ORIGIN, referer: VIU_REFERER, "user-agent": USER_AGENT, accept: "*/*" },
-      });
-      if (up.statusCode !== 200) {
-        res.status(up.statusCode);
-        return res.send(up.body);
+      if (LIVE_REDIRECT) {
+        log(`[stream-hls] redirecting to CDN`);
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        return res.redirect(302, cdnUrl);
       }
-      let m3u8 = (up.body || Buffer.from("")).toString("utf8");
+      let m3u8: string;
+      if (hlsResolverBody) {
+        m3u8 = hlsResolverBody.toString("utf8");
+      } else {
+        const u2 = new URL(cdnUrl);
+        const up = await httpsRequestFollow({
+          method: "GET",
+          hostname: u2.hostname,
+          path: u2.pathname + u2.search,
+          headers: { origin: VIU_ORIGIN, referer: VIU_REFERER, "user-agent": USER_AGENT, accept: "*/*" },
+        });
+        if (up.statusCode !== 200) {
+          res.status(up.statusCode);
+          return res.send(up.body);
+        }
+        m3u8 = (up.body || Buffer.from("")).toString("utf8");
+      }
       const cdnBase = cdnUrl.replace(/\/[^/]*$/, "/");
       m3u8 = rewriteM3u8Urls(m3u8, cdnBase);
       const ttl = isCatchup ? LIVE_MPD_CACHE_TTL_MS : VOD_MPD_CACHE_TTL_MS;
@@ -2418,47 +2432,54 @@ expressApp.all("/api/stream/t/:token", async (req, res) => {
       return res.redirect(302, `https://${applyCdn(host)}${rest}`);
     }
 
-    if (LIVE_REDIRECT && isLive) {
+    if (LIVE_REDIRECT) {
       const target = applyCdn(resolved.finalUrl);
+      log(`[stream] redirecting to CDN ${target.substring(0, 80)}`);
       res.setHeader("Access-Control-Allow-Origin", "*");
       return res.redirect(302, target);
     }
 
     const cdnUrl = applyCdn(resolved.finalUrl);
-    let u2: URL;
-    try {
-      u2 = new URL(cdnUrl);
-    } catch (e) {
-      log(`[stream] bad CDN URL: ${cdnUrl}`);
-      res.setHeader("Access-Control-Allow-Origin", "*");
-      return res.redirect(302, `https://${applyCdn(host)}${rest}`);
-    }
+    let xml: string;
+    if (resolverBody) {
+      xml = resolverBody.toString("utf8");
+      log(`[stream] using resolver body (${xml.length} chars)`);
+    } else {
+      let u2: URL;
+      try {
+        u2 = new URL(cdnUrl);
+      } catch (e) {
+        log(`[stream] bad CDN URL: ${cdnUrl}`);
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        return res.redirect(302, `https://${applyCdn(host)}${rest}`);
+      }
 
-    let up: { statusCode: number; headers: Record<string, string>; body?: Buffer };
-    try {
-      up = await httpsRequestFollow({
-        method: "GET",
-        hostname: u2.hostname,
-        path: u2.pathname + u2.search,
-        headers: {
-          origin: VIU_ORIGIN,
-          referer: VIU_REFERER,
-          "user-agent": USER_AGENT,
-          accept: "*/*",
-          ...(req.headers.range ? { range: req.headers.range as string } : {}),
-        },
-      });
-    } catch (e) {
-      log(`[stream] fetch failed for ${cdnUrl.substring(0, 80)}: ${(e as Error).message}, redirecting to CDN`);
-      res.setHeader("Access-Control-Allow-Origin", "*");
-      return res.redirect(302, cdnUrl);
+      let up: { statusCode: number; headers: Record<string, string>; body?: Buffer };
+      try {
+        up = await httpsRequestFollow({
+          method: "GET",
+          hostname: u2.hostname,
+          path: u2.pathname + u2.search,
+          headers: {
+            origin: VIU_ORIGIN,
+            referer: VIU_REFERER,
+            "user-agent": USER_AGENT,
+            accept: "*/*",
+            ...(req.headers.range ? { range: req.headers.range as string } : {}),
+          },
+        });
+      } catch (e) {
+        log(`[stream] fetch failed for ${cdnUrl.substring(0, 80)}: ${(e as Error).message}, redirecting to CDN`);
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        return res.redirect(302, cdnUrl);
+      }
+      if (up.statusCode !== 200 && up.statusCode !== 206) {
+        log(`[stream] upstream ${up.statusCode} for ${cdnUrl.substring(0, 80)}, redirecting to CDN`);
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        return res.redirect(302, cdnUrl);
+      }
+      xml = (up.body || Buffer.from("")).toString("utf8");
     }
-    if (up.statusCode !== 200 && up.statusCode !== 206) {
-      log(`[stream] upstream ${up.statusCode} for ${cdnUrl.substring(0, 80)}, redirecting to CDN`);
-      res.setHeader("Access-Control-Allow-Origin", "*");
-      return res.redirect(302, cdnUrl);
-    }
-    let xml = (up.body || Buffer.from("")).toString("utf8");
     if (!/^\s*<\?xml|<MPD/i.test(xml)) {
       log(`[stream] non-MPD response (${xml.substring(0, 80)}), redirecting to CDN`);
       res.setHeader("Access-Control-Allow-Origin", "*");
