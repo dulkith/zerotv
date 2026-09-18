@@ -422,7 +422,7 @@ function psshCacheSet(key: string, value: string) {
 function psshCacheGet(key: string): string | null {
   const v = psshCache[key];
   if (!v) return null;
-  if (Date.now() - v.ts > 24 * 3600 * 1000) {
+  if (Date.now() - v.ts > 72 * 3600 * 1000) {
     delete psshCache[key];
     return null;
   }
@@ -433,7 +433,7 @@ function cleanupPsshCache() {
   const now = Date.now();
   let removed = 0;
   for (const [k, v] of Object.entries(psshCache)) {
-    if (now - v.ts > 24 * 3600 * 1000) { delete psshCache[k]; removed++; }
+    if (now - v.ts > 72 * 3600 * 1000) { delete psshCache[k]; removed++; }
   }
   if (removed > 0) {
     log(`[pssh-cache] Cleaned ${removed} expired entries`);
@@ -626,7 +626,7 @@ function pickClient() {
   return sockets[SOCKET_STATS.rrIndex++ % sockets.length];
 }
 
-function delegateResolve(url: string, timeoutMs = SOCKET_RESOLVE_TIMEOUT_MS): Promise<{ finalUrl: string; httpStatus: number; hops: number; contentType: string }> {
+function delegateResolve(url: string, timeoutMs = SOCKET_RESOLVE_TIMEOUT_MS, fetchBody = false): Promise<{ finalUrl: string; httpStatus: number; hops: number; contentType: string; body?: Buffer }> {
   return new Promise((resolve, reject) => {
     const socket = pickClient();
     if (!socket) return reject(new Error("No socket client connected"));
@@ -636,18 +636,22 @@ function delegateResolve(url: string, timeoutMs = SOCKET_RESOLVE_TIMEOUT_MS): Pr
       reject(new Error("Client resolve timeout"));
     }, timeoutMs);
     PENDING_RESOLVES.set(id, { resolve, reject, timer, socketId: socket.id });
-    socket.emit("get_stream_data", { url, id }, (response: Record<string, unknown>) => {
+    socket.emit("get_stream_data", { url, id, fetchBody }, (response: Record<string, unknown>) => {
       const pending = PENDING_RESOLVES.get(id);
       if (!pending) return;
       clearTimeout(pending.timer);
       PENDING_RESOLVES.delete(id);
       if (!response || response.status !== "ok") return reject(new Error(String(response?.message || "unknown error")));
-      resolve({
+      const result: { finalUrl: string; httpStatus: number; hops: number; contentType: string; body?: Buffer } = {
         finalUrl: String(response.manifest || ""),
         httpStatus: Number(response.httpStatus || 200),
         hops: Number(response.hops || 1),
         contentType: String(response.contentType || ""),
-      });
+      };
+      if (response.body && typeof response.body === "string") {
+        result.body = Buffer.from(String(response.body), "base64");
+      }
+      resolve(result);
     });
   });
 }
@@ -2408,12 +2412,17 @@ expressApp.all("/api/stream/t/:token", async (req, res) => {
       return res.send(cachedMpd);
     }
     const originalUrl = `https://${host}${rest}`;
-    let resolved: { finalUrl: string; httpStatus: number; hops: number; contentType: string } | null = null;
+    let resolved: { finalUrl: string; httpStatus: number; hops: number; contentType: string; body?: Buffer } | null = null;
+    let resolverBody: Buffer | null = null;
 
     if (pickClient()) {
       try {
         SOCKET_STATS.totalDelegateResolves++;
-        resolved = await delegateResolve(originalUrl, SOCKET_RESOLVE_TIMEOUT_MS);
+        resolved = await delegateResolve(originalUrl, SOCKET_RESOLVE_TIMEOUT_MS, isCatchup);
+        if (resolved.body && resolved.body.length > 0) {
+          resolverBody = resolved.body;
+          log(`[stream] resolver returned body: ${resolverBody.length}b`);
+        }
       } catch {}
     }
     if (!resolved && SERVER_FALLBACK_RESOLVE) {
@@ -2432,11 +2441,18 @@ expressApp.all("/api/stream/t/:token", async (req, res) => {
       return res.redirect(302, `https://${applyCdn(host)}${rest}`);
     }
 
-    if (LIVE_REDIRECT) {
-      const target = applyCdn(resolved.finalUrl);
-      log(`[stream] redirecting to CDN ${target.substring(0, 80)}`);
+    if (isLive || isVod) {
+      if (LIVE_REDIRECT) {
+        const target = applyCdn(resolved.finalUrl);
+        log(`[stream] redirecting to CDN (${isVod ? "vod" : "live"}) ${target.substring(0, 80)}`);
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        return res.redirect(302, target);
+      }
+    }
+    if (isCatchup && !resolverBody) {
+      log(`[stream] catchup needs body but no resolver body, redirecting to CDN`);
       res.setHeader("Access-Control-Allow-Origin", "*");
-      return res.redirect(302, target);
+      return res.redirect(302, applyCdn(resolved.finalUrl));
     }
 
     const cdnUrl = applyCdn(resolved.finalUrl);
@@ -2508,12 +2524,12 @@ expressApp.all("/api/stream/t/:token", async (req, res) => {
       newBaseFinal = `${proto}://${hostHdr}/api/stream/t/${segToken}`;
     }
 
-    const needsPssh = isCatchup || isVod;
+    const needsPssh = isCatchup;
     let pssh: string | null = null;
     if (needsPssh) {
-      const cm = rest.match(/\/bpk-tv\/([^/]+)\//) || rest.match(/\/bpk-vod\/[^/]+\/[^/]+\/output\/([^/]+)\//);
+      const cm = rest.match(/\/bpk-tv\/([^/]+)\//);
       const channelKey = cm ? cm[1] : "unknown";
-      const psshKey = isCatchup ? `${channelKey}:${extractBeginFromUrl(rest) || ""}:${extractEndFromUrl(rest) || ""}` : `vod:${channelKey}`;
+      const psshKey = channelKey;
       pssh = psshCacheGet(psshKey);
       if (!pssh) {
         try {
