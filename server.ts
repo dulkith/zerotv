@@ -3429,6 +3429,81 @@ expressApp.get("/config", (req, res) => {
   res.json({ ok: true, tokenTtl: Math.floor(STREAM_TOKEN_TTL_MS / 1000), drmTtl: Math.floor(DRM_LICENSE_TTL_MS / 1000) });
 });
 
+// ── TELEGRAM CONTACT ──────────────────────────────────────────
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "8279567692:AAEAauM0Jw1c2F-DyUisiFyncHSFBiCNIe0";
+const TELEGRAM_OWNER_ID = process.env.TELEGRAM_OWNER_ID || "1593769028";
+
+expressApp.post("/api/telegram", async (req, res) => {
+  try {
+    const { name, message } = req.body || {};
+    if (!message || typeof message !== "string") {
+      return res.status(400).json({ error: "Message is required" });
+    }
+    const text = `📢 *Copyright Contact Request*\n\n*From:* ${name || "Anonymous"}\n*Message:* ${message}`;
+    const r = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: TELEGRAM_OWNER_ID, text, parse_mode: "Markdown" }),
+    });
+    const data = await r.json();
+    if (!data.ok) return res.status(500).json({ error: "Failed to send" });
+    res.json({ ok: true });
+  } catch { res.status(500).json({ error: "Internal error" }); }
+});
+
+// ── TELEGRAM WEBHOOK ──────────────────────────────────────────
+expressApp.post("/api/telegram/webhook", async (req, res) => {
+  try {
+    const update = req.body;
+    const msg = update.message;
+    if (!msg) return res.json({ ok: true });
+    const chatId = msg.chat.id;
+    const text = msg.text || "";
+    const firstName = msg.from?.first_name || "User";
+    const lastName = msg.from?.last_name || "";
+    const username = msg.from?.username ? `@${msg.from.username}` : "";
+    if (String(chatId) === TELEGRAM_OWNER_ID && msg.reply_to_message) {
+      const match = msg.reply_to_message.text?.match(/👤 User: (.+)\n🆔 ID: (\d+)/);
+      if (match) {
+        const userId = match[2];
+        await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: userId, text: `💬 *Owner:* ${text}`, parse_mode: "Markdown" }),
+        });
+      }
+      return res.json({ ok: true });
+    }
+    if (String(chatId) !== TELEGRAM_OWNER_ID) {
+      const ownerText = `📩 *New Message*\n\n👤 User: ${firstName} ${lastName} ${username}\n🆔 ID: ${chatId}\n\n💬 ${text}`;
+      await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: TELEGRAM_OWNER_ID, text: ownerText, parse_mode: "Markdown" }),
+      });
+      await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, text: "✅ Your message has been sent. We'll get back to you soon." }),
+      });
+    }
+    res.json({ ok: true });
+  } catch { res.json({ ok: true }); }
+});
+
+// ── TELEGRAM WEBHOOK SETUP ──────────────────────────────────
+expressApp.get("/api/telegram/setup", async (req, res) => {
+  try {
+    const baseUrl = req.query.url as string;
+    if (!baseUrl) return res.json({ error: "Missing ?url= parameter" });
+    const webhookUrl = `${baseUrl.replace(/\/$/, "")}/api/telegram/webhook`;
+    await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteWebhook`);
+    const r = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: webhookUrl, allowed_updates: ["message"] }),
+    });
+    const data = await r.json();
+    res.json({ ok: data.ok, webhook_url: webhookUrl, description: data.description });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
 // ── NEXT.JS HANDLER (fallback for all non-API routes) ──────
 expressApp.all("*path", (req, res) => {
   return handle(req, res);
