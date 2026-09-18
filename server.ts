@@ -1513,16 +1513,14 @@ function buildLiveEntry(ch: Record<string, unknown>, base: string, deviceUid?: s
 
   let e = `#EXTINF:-1 tvg-id="${uid}" tvg-name="${title}" tvg-logo="${logo}"`;
   if (ch.epg_channel) e += ` tvg-chno="${escapeM3U(String(ch.epg_channel))}"`;
-  if (isCatchup) e += ` catchup="default" catchup-source="${catchupUrl}" catchup-days="${days}"`;
+  if (isCatchup) e += ` catchup="shift" catchup-source="${catchupUrl}" catchup-days="3"`;
   e += ` group-title="${category}",${title}\n`;
   e += `#EXTGRP:${category}\n`;
   if (isCatchup) {
     e += `#EXT-X-PLAYLIST-TYPE:VOD\n`;
     e += `#KODIPROP:catchup=${stream}?begin=\${start}&end=\${end}\n`;
-    e += `#KODIPROP:catchup-days=${days}\n`;
+    e += `#KODIPROP:catchup-days=3\n`;
     e += `#KODIPROP:catchup-correction=0\n`;
-    e += `#EXTVLCOPT:catchup=default\n`;
-    e += `#EXTVLCOPT:timeshift=default\n`;
   }
   e += `#KODIPROP:inputstream=inputstream.adaptive\n`;
   e += `#KODIPROP:inputstream.adaptive.manifest_type=mpd\n`;
