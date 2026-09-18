@@ -851,6 +851,53 @@ async function rebuildAllCategories() {
 async function refreshChannelsFile() {
   const token = await getToken();
   const j = await fetchChannelsFromViu(token);
+  const CATEGORY_MAP: Record<number, string> = {
+    11: "Local", 12: "Local", 13: "Local", 14: "Local", 15: "Local",
+    16: "Local", 3: "Local", 5: "Local", 6: "Local", 7: "Local",
+    17: "Local", 26: "Local", 19: "Local", 20: "Local", 21: "Local",
+    22: "Local", 23: "Local", 24: "Local", 25: "Local", 27: "Local",
+    28: "Local", 29: "Local", 30: "Local", 31: "Local",
+    32: "Religious", 33: "Religious", 34: "Religious", 35: "Religious",
+    36: "News", 37: "News", 38: "News", 39: "News", 40: "News",
+    41: "News", 42: "News", 43: "News", 1831: "News", 1833: "News",
+    1834: "News", 1835: "News", 1836: "News",
+    46: "Music", 47: "Music", 48: "Music", 49: "Music", 50: "Music", 87: "Music",
+    51: "Kids", 52: "Kids", 53: "Kids", 54: "Kids", 55: "Kids",
+    56: "Kids", 58: "Kids", 68: "Kids", 2086: "Kids",
+    61: "Edutainment", 62: "Edutainment", 63: "Edutainment", 64: "Edutainment",
+    2: "Edutainment", 60: "Edutainment", 67: "Edutainment",
+    8: "Edutainment", 116: "Edutainment", 2085: "Edutainment",
+    69: "Edutainment", 59: "Edutainment", 90: "Edutainment",
+    2126: "Sports", 70: "Sports", 71: "Sports", 72: "Sports", 73: "Sports",
+    74: "Sports", 75: "Sports", 76: "Sports", 85: "Sports",
+    132: "Sports", 133: "Sports", 2236: "Sports",
+    126: "Sports", 127: "Sports", 128: "Sports", 129: "Sports",
+    130: "Sports", 131: "Sports", 2382: "Sports", 2381: "Sports",
+    2082: "Sports", 2084: "Sports", 2380: "Sports",
+    78: "English Entertainment", 79: "English Entertainment", 80: "English Entertainment",
+    81: "English Entertainment", 77: "English Entertainment", 82: "English Entertainment",
+    83: "English Entertainment", 84: "English Entertainment", 86: "English Entertainment",
+    88: "English Entertainment", 89: "English Entertainment",
+    117: "English Entertainment", 118: "English Entertainment", 119: "English Entertainment",
+    120: "English Entertainment", 121: "English Entertainment", 122: "English Entertainment",
+    123: "English Entertainment", 124: "English Entertainment", 125: "English Entertainment",
+    2383: "English Entertainment",
+    91: "Hindi Entertainment", 92: "Hindi Entertainment", 93: "Hindi Entertainment",
+    94: "Hindi Entertainment", 95: "Hindi Entertainment", 96: "Hindi Entertainment",
+    97: "Hindi Entertainment", 98: "Hindi Entertainment", 99: "Hindi Entertainment",
+    1837: "Hindi Entertainment",
+    100: "Tamil Entertainment", 101: "Tamil Entertainment", 102: "Tamil Entertainment",
+    103: "Tamil Entertainment", 104: "Tamil Entertainment", 105: "Tamil Entertainment",
+    106: "Tamil Entertainment", 107: "Tamil Entertainment", 108: "Tamil Entertainment",
+    109: "Educational", 110: "Educational", 111: "Educational", 112: "Educational",
+    113: "Educational",
+  };
+  if (Array.isArray((j as any).data)) {
+    for (const ch of (j as any).data) {
+      if (ch.id != null && CATEGORY_MAP[ch.id]) ch.category = CATEGORY_MAP[ch.id];
+      else if (!ch.category) ch.category = "Others";
+    }
+  }
   fs.writeFileSync(CHANNELS_FILE, JSON.stringify(j, null, 2), "utf8");
   saveChannelsSync(j as unknown as Record<string, unknown>);
   const n = Array.isArray((j as Record<string, unknown>).data) ? ((j as Record<string, unknown>).data as unknown[]).length : 0;
