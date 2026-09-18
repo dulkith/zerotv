@@ -340,9 +340,14 @@ export default function HomeAppPage() {
     pushUrl("/home");
   }, []);
 
+  const [liveCategory, setLiveCategory] = useState("All");
+
+  const liveCategories = Array.from(new Set(channels.map((c) => c.category || "Other"))).sort();
   const filteredChannels = search
     ? channels.filter((c) => c.name.toLowerCase().includes(search.toLowerCase()))
-    : channels;
+    : liveCategory === "All"
+      ? channels
+      : channels.filter((c) => (c.category || "Other") === liveCategory);
 
   const activeCatUid = currentTab.startsWith("cat:") ? currentTab.slice(4) : null;
   const activeCat = categories.find((c) => c.uid === activeCatUid);
@@ -458,7 +463,27 @@ export default function HomeAppPage() {
           filteredChannels.length === 0 ? (
             <div className="text-center py-24 text-white/40">No channels</div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 2xl:grid-cols-8 gap-2 sm:gap-3">
+            <>
+              <div className="flex gap-1.5 items-center mb-4 overflow-x-auto no-scrollbar pb-1">
+                {["All", ...liveCategories].map((cat) => {
+                  const count = cat === "All" ? channels.length : channels.filter((c) => (c.category || "Other") === cat).length;
+                  return (
+                    <button
+                      key={cat}
+                      onClick={() => setLiveCategory(cat)}
+                      className={`px-3 py-1.5 rounded-lg text-[11px] sm:text-xs font-semibold transition-all whitespace-nowrap ${
+                        liveCategory === cat
+                          ? "bg-[#ec1c24] text-white"
+                          : "bg-white/[0.04] text-white/45 hover:bg-white/[0.08] hover:text-white/75"
+                      }`}
+                    >
+                      {cat}
+                      <span className="ml-1 text-[9px] opacity-60">{count}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 2xl:grid-cols-8 gap-2 sm:gap-3">
               {filteredChannels.map((ch) => (
                 <ChannelCard
                   key={ch.uid}
@@ -468,7 +493,8 @@ export default function HomeAppPage() {
                   onSchedule={() => handleOpenSchedule(ch)}
                 />
               ))}
-            </div>
+              </div>
+            </>
           )
         ) : activeCatUid ? (
           filteredCatItems.length === 0 ? (

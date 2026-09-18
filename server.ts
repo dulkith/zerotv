@@ -704,6 +704,7 @@ function projectChannel(ch: Record<string, unknown>) {
     resolution: ch.resolution || null,
     catchup: !!ch.timeshiftable,
     catchupHours: ch.ts_rec_duration || ch.rec_duration || null,
+    category: ch.category || null,
   };
 }
 
@@ -1505,6 +1506,7 @@ function buildLiveEntry(ch: Record<string, unknown>, base: string, deviceUid?: s
   const logoId = pickLogo(ch.logos as Record<string, unknown> | null);
   const logo = logoId ? `${base}/api/img/${logoId}` : "";
   const title = escapeM3U(String(ch.name || ""));
+  const category = escapeM3U(String(ch.category || "Live TV"));
   const isCatchup = !!ch.timeshiftable || !!ch.epg_channel;
   const days = ch.ts_rec_duration || ch.rec_duration || 72;
   const catchupUrl = `${stream}?begin=\${start}&end=\${end}`;
@@ -1512,8 +1514,8 @@ function buildLiveEntry(ch: Record<string, unknown>, base: string, deviceUid?: s
   let e = `#EXTINF:-1 tvg-id="${uid}" tvg-name="${title}" tvg-logo="${logo}"`;
   if (ch.epg_channel) e += ` tvg-chno="${escapeM3U(String(ch.epg_channel))}"`;
   if (isCatchup) e += ` catchup="default" catchup-source="${catchupUrl}" catchup-days="${days}"`;
-  e += ` group-title="Live TV",${title}\n`;
-  e += `#EXTGRP:Live TV\n`;
+  e += ` group-title="${category}",${title}\n`;
+  e += `#EXTGRP:${category}\n`;
   if (isCatchup) {
     e += `#EXT-X-PLAYLIST-TYPE:VOD\n`;
     e += `#KODIPROP:catchup=${stream}?begin=\${start}&end=\${end}\n`;

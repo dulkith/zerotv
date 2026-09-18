@@ -7,6 +7,7 @@ export interface Channel {
   resolution: string | null;
   catchup: boolean;
   catchupHours: number | null;
+  category: string | null;
 }
 
 export interface Category {
