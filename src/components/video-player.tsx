@@ -201,9 +201,9 @@ export function VideoPlayer({ streamUrl, licenseUrl, licenseFp, title, subtitle,
         setError(d?.message || `Error ${d?.code}`);
       });
 
-      const isSafari = /Safari/i.test(navigator.userAgent) && !/Chrome|Chromium|Edg|CriOS|FxiOS/i.test(navigator.userAgent);
-      const drmType = (licenseFp && isSafari) ? "fairplay" : "widevine";
-      console.log("[shaka] DRM type:", drmType, "safari:", isSafari, "fp:", !!licenseFp, "licenseFp:", licenseFp, "licenseWv:", licenseUrl, "stream:", streamUrl);
+      const isIos = /iP(hone|ad|od)/i.test(navigator.userAgent);
+      const drmType = (licenseFp && isIos) ? "fairplay" : "widevine";
+      console.log("[shaka] DRM type:", drmType, "ios:", isIos, "fp:", !!licenseFp, "licenseFp:", licenseFp, "licenseWv:", licenseUrl, "stream:", streamUrl);
 
       const config: Record<string, unknown> = {
         drm: { retryParameters: { maxAttempts: 3, baseDelay: 500, backoffFactor: 2, timeout: 30000 } },

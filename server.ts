@@ -16,6 +16,7 @@ import crypto from "crypto";
 import zlib from "zlib";
 import { Server as SocketIOServer } from "socket.io";
 import { URL } from "url";
+import { Telegraf, Markup } from "telegraf";
 import {
   encryptStreamPath,
   decryptStreamPath,
@@ -1079,16 +1080,28 @@ function extractAssetId(realPath: string): string {
   return "";
 }
 
-function issueStreamResponse(kind: string, licenseKind: string, realPath: string, deviceUid?: string, contentUid?: string) {
+function detectIos(req: any): boolean {
+  const ua = (req.headers?.["user-agent"] || "") as string;
+  return /iP(hone|ad|od)/i.test(ua);
+}
+
+function issueStreamResponse(kind: string, licenseKind: string, realPath: string, deviceUid?: string, contentUid?: string, isIos = false) {
   const streamToken = encryptStreamPath(realPath, STREAM_TOKEN_TTL_MS);
-  const wvToken = signDrmToken(licenseKind, DRM_LICENSE_TTL_MS, deviceUid, "wv");
   const assetId = extractAssetId(realPath);
-  const fpToken = signDrmToken(licenseKind, DRM_LICENSE_TTL_MS, deviceUid, "fp", assetId, contentUid);
+  if (isIos) {
+    const fpToken = signDrmToken(licenseKind, DRM_LICENSE_TTL_MS, deviceUid, "fp", assetId, contentUid);
+    return {
+      url: `/api/stream/t/${streamToken}`,
+      licenseFp: `/api/drm/${fpToken}`,
+      licenseExpires: Date.now() + DRM_LICENSE_TTL_MS,
+      streamExpires: Date.now() + STREAM_TOKEN_TTL_MS,
+      isLive: kind === "live" || kind === "catchup",
+    };
+  }
+  const wvToken = signDrmToken(licenseKind, DRM_LICENSE_TTL_MS, deviceUid, "wv");
   return {
     url: `/api/stream/t/${streamToken}`,
-    license: `/api/drm/${wvToken}`,
     licenseWv: `/api/drm/${wvToken}`,
-    licenseFp: `/api/drm/${fpToken}`,
     licenseExpires: Date.now() + DRM_LICENSE_TTL_MS,
     streamExpires: Date.now() + STREAM_TOKEN_TTL_MS,
     isLive: kind === "live" || kind === "catchup",
@@ -1734,47 +1747,23 @@ expressApp.get("/api/auth/epg-token", (req, res) => {
 expressApp.post("/api/auth/auto-login", async (req, res) => {
   const deviceUid = req.headers["x-device-uid"] as string;
   if (!deviceUid || deviceUid.length < 20 || deviceUid.length > 64) {
-    return res.status(400).json({ error: "Invalid device identifier" });
+    return res.json({ ok: true, signedIn: false, reason: "invalid_device" });
   }
-  const device = getOrCreateDevice(deviceUid);
+
+  const device = loadDevice(deviceUid) as LoginDevice | null;
+  if (!device) {
+    return res.json({ ok: true, signedIn: false, reason: "not_registered" });
+  }
 
   const saved = loadLatestTokens(deviceUid);
   const status = tokenStatus(saved);
   const maskedMobile = saved?.mobileNumber ? maskMobile(saved.mobileNumber as string) : null;
 
-  if (status === "access_valid") {
-    return res.json({ ok: true, signedIn: true, mobileNumber: maskedMobile, cached: true });
+  if (status === "access_valid" || status === "refresh_valid") {
+    return res.json({ ok: true, signedIn: true, mobileNumber: maskedMobile });
   }
 
-  if (status === "refresh_valid") {
-    finalLogin(device)
-      .then((r) => {
-        const d = (r.data?.data || r.data) as Record<string, unknown> | undefined;
-        if (r.status >= 200 && r.status < 300 && d?.access_token) {
-saveLoginTokens(device, r.data, saved?.mobileNumber as string | null, { live: r.wv_license_live ?? null, vod: r.wv_license_vod ?? null });
-          return res.json({ ok: true, signedIn: true, mobileNumber: maskedMobile, refreshed: true });
-        }
-        return res.status(401).json({ ok: false, reason: "refresh_failed" });
-      })
-      .catch(() => res.status(401).json({ ok: false, reason: "refresh_failed" }));
-    return;
-  }
-
-  try {
-    log(`[auth] auto-login trying finalLogin for device ${deviceUid.slice(0, 8)}…`);
-    const r = await finalLogin(device);
-    const d = (r.data?.data || r.data) as Record<string, unknown> | undefined;
-    log(`[auth] auto-login finalLogin → status=${r.status} hasAccessToken=${!!d?.access_token} wvLive=${!!r.wv_license_live} wvVod=${!!r.wv_license_vod}`);
-    if (r.status >= 200 && r.status < 300 && d?.access_token) {
-      saveLoginTokens(device, r.data, saved?.mobileNumber as string | null, { live: r.wv_license_live ?? null, vod: r.wv_license_vod ?? null });
-      const mobile = d.user?.mobile || saved?.mobileNumber || null;
-      return res.json({ ok: true, signedIn: true, mobileNumber: mobile ? maskMobile(mobile as string) : null, refreshed: true });
-    }
-    return res.status(401).json({ ok: false, reason: "tokens_expired" });
-  } catch (e) {
-    log(`[auth] auto-login finalLogin error:`, (e as Error).message);
-    return res.status(401).json({ ok: false, reason: "tokens_expired" });
-  }
+  return res.json({ ok: true, signedIn: false, reason: "no_session", mobileNumber: maskedMobile });
 });
 
 expressApp.post("/api/auth/send-otp", (req, res) => {
@@ -1903,6 +1892,96 @@ expressApp.post("/api/auth/logout", async (req, res) => {
   } catch { }
   res.setHeader("Set-Cookie", "session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
   res.json({ ok: true });
+});
+
+// ── QR LOGIN ─────────────────────────────────────────────────
+const QR_SECRET = process.env.QR_SECRET || process.env.STREAM_ENCRYPTION_KEY || "qr-login-secret";
+
+function signQrToken(deviceUid: string, ttlSec: number): string {
+  const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+  const now = Math.floor(Date.now() / 1000);
+  const payload = Buffer.from(JSON.stringify({ sub: deviceUid, iat: now, exp: now + ttlSec })).toString("base64url");
+  const sigInput = `${header}.${payload}`;
+  const sig = crypto.createHmac("sha256", QR_SECRET).update(sigInput).digest("base64url");
+  return `${sigInput}.${sig}`;
+}
+
+function verifyQrToken(token: string): { deviceUid: string } | null {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const [header, payload, sig] = parts;
+    const sigInput = `${header}.${payload}`;
+    const expected = crypto.createHmac("sha256", QR_SECRET).update(sigInput).digest("base64url");
+    const a = Buffer.from(sig, "base64url");
+    const b = Buffer.from(expected, "base64url");
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    const data = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    if (!data.exp || data.exp < Math.floor(Date.now() / 1000)) return null;
+    return { deviceUid: data.sub };
+  } catch {
+    return null;
+  }
+}
+
+expressApp.post("/api/auth/qr-generate", async (req, res) => {
+  const deviceUid = req.headers["x-device-uid"] as string;
+  if (!deviceUid) return res.status(400).json({ error: "Missing device" });
+  const latest = loadLatestTokens(deviceUid);
+  const status = tokenStatus(latest);
+  if (status !== "access_valid" && status !== "refresh_valid") {
+    return res.status(401).json({ error: "Not signed in" });
+  }
+  const token = signQrToken(deviceUid, 300);
+  const base = `${req.protocol}://${req.get("host")}`;
+  const url = `${base}/qr-login?token=${token}`;
+  try {
+    const QRCode = await import("qrcode");
+    const qrDataUrl = await QRCode.default.toDataURL(url, { width: 256, margin: 1, color: { dark: "#000000", light: "#ffffff" } });
+    res.json({ ok: true, token, url, qr: qrDataUrl });
+  } catch {
+    res.json({ ok: true, token, url, qr: null });
+  }
+});
+
+expressApp.post("/api/auth/qr-claim", async (req, res) => {
+  const { token: qrToken } = req.body || {};
+  if (!qrToken || typeof qrToken !== "string") return res.status(400).json({ error: "Missing token" });
+  const decoded = verifyQrToken(qrToken);
+  if (!decoded) return res.status(400).json({ error: "Invalid or expired QR code" });
+
+  const sourceUid = decoded.deviceUid;
+  const targetUid = req.headers["x-device-uid"] as string;
+  if (!targetUid) return res.status(400).json({ error: "Missing target device" });
+
+  const sourceTokens = loadLatestTokens(sourceUid);
+  if (!sourceTokens) return res.status(400).json({ error: "Source device has no session" });
+
+  const targetDevice = getOrCreateDevice(targetUid);
+  const sourceMobile = sourceTokens.mobileNumber as string | undefined;
+
+  if (sourceTokens.access_token) {
+    const store = loadTokensStore();
+    const record: Record<string, unknown> = {
+      _id: targetUid,
+      deviceUid: targetUid,
+      mobileNumber: sourceMobile || "",
+      tokens: {
+        access_token: sourceTokens.access_token,
+        refresh_token: sourceTokens.refresh_token,
+        expires_at: sourceTokens.expires_at,
+        refresh_expires_at: sourceTokens.refresh_expires_at,
+      },
+      viuWidevineDeviceId: sourceTokens.viuWidevineDeviceId || "",
+      captured_at: new Date().toISOString(),
+      clonedFrom: sourceUid,
+    };
+    store[targetUid] = [record];
+    saveTokensStore(store);
+  }
+
+  log(`[qr-login] Cloned session from ${sourceUid.slice(0, 8)}… → ${targetUid.slice(0, 8)}…`);
+  res.json({ ok: true, signedIn: true });
 });
 
 // ── IMAGE PROXY ───────────────────────────────────────────────
@@ -2208,8 +2287,9 @@ expressApp.get("/api/stream/live/:chUid", requireStreamAuth, (req, res) => {
   const realPath = `bpcdn.dialog.lk/bpk-tv/${realChId}/out/index.mpd`;
   res.setHeader("Cache-Control", "no-store");
   const contentUid = req.params.chUid;
-  const resp = issueStreamResponse("live", "tv", realPath, (req as Record<string, unknown>).deviceUid as string, contentUid);
-  log("[stream-live] response keys:", Object.keys(resp).join(","), "fp:", resp.licenseFp ? "yes" : "no");
+  const isIos = detectIos(req);
+  const resp = issueStreamResponse("live", "tv", realPath, (req as Record<string, unknown>).deviceUid as string, contentUid, isIos);
+  log("[stream-live] response keys:", Object.keys(resp).join(","), "fp:", resp.licenseFp ? "yes" : "no", "ios:", isIos);
   res.json(resp);
 });
 
@@ -2233,7 +2313,7 @@ expressApp.get("/api/stream/movie/:uid", requireStreamAuth, (req, res) => {
   const cm = "0-" + viuUid;
   const realPath = `bpcdn.dialog.lk/bpk-vod/vodprod/output/${cm}/${cm}/index.mpd`;
   res.setHeader("Cache-Control", "no-store");
-  res.json(issueStreamResponse("movie", "content", realPath, (req as Record<string, unknown>).deviceUid as string, viuUid));
+  res.json(issueStreamResponse("movie", "content", realPath, (req as Record<string, unknown>).deviceUid as string, viuUid, detectIos(req)));
 });
 
 expressApp.get("/api/stream/episode/:uid", requireStreamAuth, (req, res) => {
@@ -2243,7 +2323,7 @@ expressApp.get("/api/stream/episode/:uid", requireStreamAuth, (req, res) => {
   if (!cm) return res.status(404).json({ error: "episode not indexed — reload the series page" });
   const realPath = `bpcdn.dialog.lk/bpk-vod/vodprod/output/${cm}/${cm}/index.mpd`;
   res.setHeader("Cache-Control", "no-store");
-  res.json(issueStreamResponse("episode", "content", realPath, (req as Record<string, unknown>).deviceUid as string, ref.realId as string));
+  res.json(issueStreamResponse("episode", "content", realPath, (req as Record<string, unknown>).deviceUid as string, ref.realId as string, detectIos(req)));
 });
 
 expressApp.get("/api/stream/catchup/:chUid", requireStreamAuth, (req, res) => {
@@ -2259,7 +2339,7 @@ expressApp.get("/api/stream/catchup/:chUid", requireStreamAuth, (req, res) => {
   if (!realChId) return res.status(404).json({ error: "no channel" });
   const realPath = `bpcdn.dialog.lk/bpk-tv/${realChId}/out/index.mpd?begin=${encodeURIComponent(String(begin))}&end=${encodeURIComponent(String(end))}`;
   res.setHeader("Cache-Control", "no-store");
-  res.json(issueStreamResponse("catchup", "tv", realPath, (req as Record<string, unknown>).deviceUid as string, req.params.chUid));
+  res.json(issueStreamResponse("catchup", "tv", realPath, (req as Record<string, unknown>).deviceUid as string, req.params.chUid, detectIos(req)));
 });
 
 expressApp.get("/api/stream/trailer/:uid", requireStreamAuth, async (req, res) => {
@@ -2273,7 +2353,7 @@ expressApp.get("/api/stream/trailer/:uid", requireStreamAuth, async (req, res) =
     const cm = String(d.cm_trailer);
     const realPath = `bpcdn.dialog.lk/bpk-vod/vodprod/output/${cm}/${cm}/index.mpd`;
     res.setHeader("Cache-Control", "no-store");
-    res.json(issueStreamResponse("trailer", "content", realPath, (req as Record<string, unknown>).deviceUid as string));
+    res.json(issueStreamResponse("trailer", "content", realPath, (req as Record<string, unknown>).deviceUid as string, undefined, detectIos(req)));
   } catch {
     if (!res.headersSent) res.status(502).json({ error: "upstream" });
   }
@@ -3519,21 +3599,221 @@ expressApp.get("/config", (req, res) => {
   res.json({ ok: true, tokenTtl: Math.floor(STREAM_TOKEN_TTL_MS / 1000), drmTtl: Math.floor(DRM_LICENSE_TTL_MS / 1000) });
 });
 
-// ── TELEGRAM CONTACT ──────────────────────────────────────────
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "8279567692:AAEAauM0Jw1c2F-DyUisiFyncHSFBiCNIe0";
-const TELEGRAM_OWNER_ID = process.env.TELEGRAM_OWNER_ID || "1593769028";
+// ── TELEGRAM BOT (Telegraf webhook mode) ──────────────────────
 
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "8279567692:AAEAauM0Jw1c2F-DyUisiFyncHSFBiCNIe0";
+const TELEGRAM_ADMIN_IDS = (process.env.TELEGRAM_ADMIN_IDS || "1593769028").split(",").map(Number);
+const TELEGRAM_CHAT_ID = Number(process.env.TELEGRAM_CHAT_ID || "-1003975202525");
+
+const BROADCAST_GROUPS = [
+  { id: TELEGRAM_CHAT_ID, name: "LankaTV" },
+];
+
+const tgBot = new Telegraf(TELEGRAM_BOT_TOKEN);
+const tgIsAdmin = (id: number) => TELEGRAM_ADMIN_IDS.includes(id);
+
+// ── In-memory state ──
+const tgCustomerToThread = new Map<number, number>();
+const tgThreadToCustomer = new Map<number, number>();
+const tgAwaitingSupport = new Set<number>();
+const tgPendingBroadcast = new Map<number, { chatId: number; messageId: number; expiresAt: number }>();
+
+// ── Menus ──
+const tgCustomerMenu = Markup.inlineKeyboard([
+  [Markup.button.callback("📞 Contact Admin", "contact_support")],
+  [Markup.button.callback("❓ Help", "help"), Markup.button.callback("ℹ️ About", "about")],
+  [Markup.button.callback("⚖️ Copyright / Takedown", "copyright")],
+]);
+
+const tgAdminMenu = Markup.inlineKeyboard([
+  [Markup.button.url("🛠 Open Admin Group", `https://t.me/c/${String(TELEGRAM_CHAT_ID).replace("-100", "")}`)],
+]);
+
+// ── /start ──
+tgBot.start(async (ctx) => {
+  if (tgIsAdmin(ctx.from.id)) {
+    return ctx.reply("👑 *LankaTV Admin*\n\nReply inside the group topic to answer customers.", { parse_mode: "Markdown", ...tgAdminMenu });
+  }
+  await ctx.reply(
+    `👋 Welcome to *LankaTV*!\n\nI'm the LankaTV support admin. Choose an option below to get started.`,
+    { parse_mode: "Markdown", ...tgCustomerMenu }
+  );
+});
+
+tgBot.command("menu", async (ctx) => {
+  if (tgIsAdmin(ctx.from.id)) return ctx.reply("👑 Admin menu:", { parse_mode: "Markdown", ...tgAdminMenu });
+  await ctx.reply("📋 *LankaTV Main Menu*", { parse_mode: "Markdown", ...tgCustomerMenu });
+});
+
+tgBot.command("groups", async (ctx) => {
+  if (!tgIsAdmin(ctx.from.id)) return;
+  const list = BROADCAST_GROUPS.map((g, i) => `${i + 1}. ${g.name} \`${g.id}\``).join("\n");
+  await ctx.reply(`📢 *Broadcast groups*\n\n${list}`, { parse_mode: "Markdown" });
+});
+
+// ── Customer actions ──
+tgBot.action("contact_support", async (ctx) => {
+  await ctx.answerCbQuery();
+  tgAwaitingSupport.add(ctx.from.id);
+  await ctx.reply(
+    `📝 *Contact LankaTV Admin*\n\nPlease type your message now (text, photo, or file).\nI'll forward it directly to the admin.`,
+    { parse_mode: "Markdown" }
+  );
+});
+
+tgBot.action("help", async (ctx) => {
+  await ctx.answerCbQuery();
+  await ctx.reply(
+    `❓ *LankaTV Help*\n\n1️⃣ Tap *📞 Contact Admin* to start a conversation.\n2️⃣ Send any message — text, photo, or document.\n3️⃣ The admin replies right here in this chat.\n\nSend /menu anytime to see these options again.`,
+    { parse_mode: "Markdown" }
+  );
+});
+
+tgBot.action("about", async (ctx) => {
+  await ctx.answerCbQuery();
+  await ctx.reply(
+    `ℹ️ *About LankaTV*\n\nLankaTV is Live TV, Movies & Series — on any device.\nSmart TV, iPhone, Laptop, TiviMate, or your browser.\n*No app needed.*`,
+    { parse_mode: "Markdown" }
+  );
+});
+
+tgBot.action("copyright", async (ctx) => {
+  await ctx.answerCbQuery();
+  await ctx.reply(
+    `⚖️ *Copyright & Takedown Requests*\n\nIf you are a copyright owner, broadcaster, or authorized representative ` +
+    `and have concerns about any channel or content on *LankaTV*:\n\nPlease contact me directly. A single request is more than enough — ` +
+    `I will take it down immediately.\n\nTap *📞 Contact Admin* below to send your request.`,
+    { parse_mode: "Markdown", ...Markup.inlineKeyboard([[Markup.button.callback("📞 Contact Admin", "contact_support")]]) }
+  );
+});
+
+// ── Broadcast pickers ──
+tgBot.action("b:all", async (ctx) => {
+  if (!tgIsAdmin(ctx.from.id)) return ctx.answerCbQuery("Admins only");
+  const pending = tgPendingBroadcast.get(ctx.from.id);
+  if (!pending || pending.expiresAt < Date.now()) { tgPendingBroadcast.delete(ctx.from.id); return ctx.answerCbQuery("Expired — run /fw again", { show_alert: true }); }
+  await ctx.answerCbQuery("Broadcasting to all groups…");
+  const results = [];
+  for (const group of BROADCAST_GROUPS) {
+    try { await ctx.telegram.copyMessage(group.id, pending.chatId, pending.messageId); results.push(`✅ ${group.name}`); } catch (err: any) { results.push(`❌ ${group.name} — ${err.message}`); }
+  }
+  tgPendingBroadcast.delete(ctx.from.id);
+  await ctx.editMessageText(`📢 *Broadcast result*\n\n${results.join("\n")}`, { parse_mode: "Markdown" }).catch(() => {});
+});
+
+tgBot.action("b:cancel", async (ctx) => {
+  if (!tgIsAdmin(ctx.from.id)) return ctx.answerCbQuery("Admins only");
+  tgPendingBroadcast.delete(ctx.from.id);
+  await ctx.answerCbQuery("Cancelled");
+  await ctx.editMessageText("❌ Broadcast cancelled.").catch(() => {});
+});
+
+tgBot.action(/^b:(\d+)$/, async (ctx) => {
+  if (!tgIsAdmin(ctx.from.id)) return ctx.answerCbQuery("Admins only");
+  const idx = parseInt(ctx.match[1], 10);
+  const group = BROADCAST_GROUPS[idx];
+  if (!group) return ctx.answerCbQuery("Group not found", { show_alert: true });
+  const pending = tgPendingBroadcast.get(ctx.from.id);
+  if (!pending || pending.expiresAt < Date.now()) { tgPendingBroadcast.delete(ctx.from.id); return ctx.answerCbQuery("Expired — run /fw again", { show_alert: true }); }
+  await ctx.answerCbQuery(`Sending to ${group.name}…`);
+  try {
+    await ctx.telegram.copyMessage(group.id, pending.chatId, pending.messageId);
+    tgPendingBroadcast.delete(ctx.from.id);
+    await ctx.editMessageText(`✅ Sent to *${group.name}*`, { parse_mode: "Markdown" }).catch(() => {});
+  } catch (err: any) {
+    await ctx.editMessageText(`❌ Failed to send to *${group.name}*\n\n_${err.message}_`, { parse_mode: "Markdown" }).catch(() => {});
+  }
+});
+
+// ── /fw — broadcast ──
+tgBot.command("fw", async (ctx) => {
+  if (!tgIsAdmin(ctx.from.id)) return;
+  if (ctx.chat.id !== TELEGRAM_CHAT_ID) return ctx.reply("⚠️ /fw only works inside the admin group.");
+  const msg = ctx.message;
+  const sourceMsgId = msg.reply_to_message?.message_id ?? msg.message_id;
+  const inlineText = msg.text.replace(/^\/fw\s*/, "").trim();
+  let targetMessageId = sourceMsgId;
+  if (inlineText && !msg.reply_to_message) {
+    const sent = await ctx.telegram.sendMessage(TELEGRAM_CHAT_ID, inlineText, { message_thread_id: msg.message_thread_id });
+    targetMessageId = sent.message_id;
+  }
+  tgPendingBroadcast.set(ctx.from.id, { chatId: ctx.chat.id, messageId: targetMessageId, expiresAt: Date.now() + 30 * 60 * 1000 });
+  const rows = BROADCAST_GROUPS.map((g, i) => [Markup.button.callback(g.name, `b:${i}`)]);
+  rows.push([Markup.button.callback("🌐 All Groups", "b:all")]);
+  rows.push([Markup.button.callback("❌ Cancel", "b:cancel")]);
+  await ctx.reply("📢 *Which group should this go to?*", { parse_mode: "Markdown", ...Markup.inlineKeyboard(rows) });
+});
+
+// ── Forum topic helpers ──
+async function tgGetOrCreateTopic(ctx: any, user: any) {
+  let threadId = tgCustomerToThread.get(user.id);
+  if (threadId) return threadId;
+  const name = `${user.first_name}${user.last_name ? " " + user.last_name : ""} [${user.id}]`;
+  const topic = await ctx.telegram.createForumTopic(TELEGRAM_CHAT_ID, name.slice(0, 128));
+  threadId = topic.message_thread_id;
+  tgCustomerToThread.set(user.id, threadId);
+  tgThreadToCustomer.set(threadId, user.id);
+  await ctx.telegram.sendMessage(TELEGRAM_CHAT_ID, `📌 Customer: ${name}\nUsername: @${user.username ?? "none"}\nID: ${user.id}`, { message_thread_id: threadId });
+  return threadId;
+}
+
+async function tgForwardToTopic(ctx: any, user: any, msg: any) {
+  const threadId = await tgGetOrCreateTopic(ctx, user);
+  const header = `📩 From: ${user.first_name}${user.last_name ? " " + user.last_name : ""} (@${user.username ?? "none"} | ${user.id})`;
+  await ctx.telegram.sendMessage(TELEGRAM_CHAT_ID, header, { message_thread_id: threadId });
+  await ctx.telegram.copyMessage(TELEGRAM_CHAT_ID, ctx.chat.id, msg.message_id, { message_thread_id: threadId });
+}
+
+// ── Customer messages ──
+tgBot.on("message", async (ctx, next) => {
+  const msg = ctx.message;
+  const user = ctx.from;
+  if (ctx.chat.id === TELEGRAM_CHAT_ID) return next();
+  if (tgIsAdmin(user.id) && ctx.chat.type === "private") return;
+  if (ctx.chat.type !== "private") return;
+  if (!tgAwaitingSupport.has(user.id)) {
+    return ctx.reply("Tap 📞 Contact Admin below to start a chat with our team.", tgCustomerMenu);
+  }
+  try {
+    await tgForwardToTopic(ctx, user, msg);
+    await ctx.reply("✅ Sent to LankaTV admin. You'll get a reply here.", Markup.inlineKeyboard([[Markup.button.callback("📨 Send another message", "contact_support")]]));
+  } catch (err) {
+    log(`[telegram] Forward error: ${(err as Error).message}`);
+    await ctx.reply("⚠️ Couldn't deliver your message. Try again later.");
+  }
+});
+
+// ── Admin replies inside group topics ──
+tgBot.on("message", async (ctx) => {
+  const msg = ctx.message;
+  if (ctx.chat.id !== TELEGRAM_CHAT_ID) return;
+  if (!tgIsAdmin(ctx.from.id)) return;
+  if (msg.text?.startsWith("/fw")) return;
+  const threadId = msg.message_thread_id;
+  if (!threadId) return;
+  const customerId = tgThreadToCustomer.get(threadId);
+  if (!customerId) return;
+  try {
+    if (msg.text) {
+      await ctx.telegram.sendMessage(customerId, `💬 Support:\n\n${msg.text}`);
+    } else {
+      await ctx.telegram.copyMessage(customerId, TELEGRAM_CHAT_ID, msg.message_id);
+    }
+    await ctx.telegram.setMessageReaction(TELEGRAM_CHAT_ID, msg.message_id, [{ type: "emoji", emoji: "✅" }]).catch(() => {});
+  } catch (err) {
+    log(`[telegram] Reply error: ${(err as Error).message}`);
+  }
+});
+
+// ── Copyright contact form endpoint ──
 expressApp.post("/api/telegram", async (req, res) => {
   try {
     const { name, message } = req.body || {};
-    if (!message || typeof message !== "string") {
-      return res.status(400).json({ error: "Message is required" });
-    }
+    if (!message || typeof message !== "string") return res.status(400).json({ error: "Message is required" });
     const text = `📢 *Copyright Contact Request*\n\n*From:* ${name || "Anonymous"}\n*Message:* ${message}`;
     const r = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: TELEGRAM_OWNER_ID, text, parse_mode: "Markdown" }),
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: TELEGRAM_ADMIN_IDS[0], text, parse_mode: "Markdown" }),
     });
     const data = await r.json();
     if (!data.ok) return res.status(500).json({ error: "Failed to send" });
@@ -3541,44 +3821,7 @@ expressApp.post("/api/telegram", async (req, res) => {
   } catch { res.status(500).json({ error: "Internal error" }); }
 });
 
-// ── TELEGRAM WEBHOOK ──────────────────────────────────────────
-expressApp.post("/api/telegram/webhook", async (req, res) => {
-  try {
-    const update = req.body;
-    const msg = update.message;
-    if (!msg) return res.json({ ok: true });
-    const chatId = msg.chat.id;
-    const text = msg.text || "";
-    const firstName = msg.from?.first_name || "User";
-    const lastName = msg.from?.last_name || "";
-    const username = msg.from?.username ? `@${msg.from.username}` : "";
-    if (String(chatId) === TELEGRAM_OWNER_ID && msg.reply_to_message) {
-      const match = msg.reply_to_message.text?.match(/👤 User: (.+)\n🆔 ID: (\d+)/);
-      if (match) {
-        const userId = match[2];
-        await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ chat_id: userId, text: `💬 *Owner:* ${text}`, parse_mode: "Markdown" }),
-        });
-      }
-      return res.json({ ok: true });
-    }
-    if (String(chatId) !== TELEGRAM_OWNER_ID) {
-      const ownerText = `📩 *New Message*\n\n👤 User: ${firstName} ${lastName} ${username}\n🆔 ID: ${chatId}\n\n💬 ${text}`;
-      await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: TELEGRAM_OWNER_ID, text: ownerText, parse_mode: "Markdown" }),
-      });
-      await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: chatId, text: "✅ Your message has been sent. We'll get back to you soon." }),
-      });
-    }
-    res.json({ ok: true });
-  } catch { res.json({ ok: true }); }
-});
-
-// ── TELEGRAM WEBHOOK SETUP ──────────────────────────────────
+// ── Webhook setup endpoint ──
 expressApp.get("/api/telegram/setup", async (req, res) => {
   try {
     const baseUrl = req.query.url as string;
@@ -3587,12 +3830,18 @@ expressApp.get("/api/telegram/setup", async (req, res) => {
     await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteWebhook`);
     const r = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: webhookUrl, allowed_updates: ["message"] }),
+      body: JSON.stringify({ url: webhookUrl, allowed_updates: ["message", "callback_query"] }),
     });
     const data = await r.json();
     res.json({ ok: data.ok, webhook_url: webhookUrl, description: data.description });
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
+
+// ── Webhook receiver — delegates to Telegraf ──
+expressApp.post("/api/telegram/webhook", (req, res) => {
+  tgBot.handleUpdate(req.body, res);
+});
+
 
 // ── NEXT.JS HANDLER (fallback for all non-API routes) ──────
 expressApp.all("*path", (req, res) => {

@@ -5,12 +5,14 @@ import { Search, Tv } from "lucide-react";
 import { ChannelCard } from "@/components/channel-card";
 import { VodCard } from "@/components/vod-card";
 import { LoginDialog } from "@/components/login-dialog";
+import { VideoPlayer } from "@/components/video-player";
+import { AppHeader } from "@/components/app-header";
+import { BottomNav } from "@/components/bottom-nav";
 import { getDeviceUid } from "@/lib/auth";
 import type { Channel, Category, VodItem } from "@/types";
 
 const VodDetail = lazy(() => import("@/components/vod-detail").then((m) => ({ default: m.VodDetail })));
 const EpgSchedule = lazy(() => import("@/components/epg-schedule").then((m) => ({ default: m.EpgSchedule })));
-const VideoPlayer = lazy(() => import("@/components/video-player").then((m) => ({ default: m.VideoPlayer })));
 
 interface EpgNow {
   now: { start: string; end: string; title: string; img: number | null } | null;
@@ -111,7 +113,11 @@ export default function HomeAppPage() {
       .then((d) => { if (!ctrl.signal.aborted) setEpgNow(d.now || {}); })
       .catch(() => {});
     getDeviceUid().then((uid) => {
-      fetch("/api/auth/state", { headers: { "x-device-uid": uid }, signal: ctrl.signal })
+      fetch("/api/auth/auto-login", {
+        method: "POST",
+        headers: { "x-device-uid": uid },
+        signal: ctrl.signal,
+      })
         .then((r) => r.json())
         .then((d) => { if (!ctrl.signal.aborted) { setSignedIn(d.signedIn || false); setAuthChecked(true); } })
         .catch(() => { if (!ctrl.signal.aborted) setAuthChecked(true); });
@@ -195,15 +201,13 @@ export default function HomeAppPage() {
     abortRef.current = new AbortController();
     const signal = abortRef.current.signal;
 
-    pushUrl(`/home/watch/${uid}${begin ? `?begin=${begin}&end=${end}` : ""}`);
-
     try {
       const deviceUid = await getDeviceUid();
       if (signal.aborted) return;
       const headers = { "x-device-uid": deviceUid };
 
       const resolveRes = await fetch(`/api/uid/resolve/${uid}`, { headers, signal });
-      if (resolveRes.status === 401) { window.location.href = "/login"; return; }
+      if (resolveRes.status === 401) { setStreamLoading(false); setPlayReq(null); setLoginOpen(true); return; }
       if (!resolveRes.ok) { setStreamError("Stream not found"); setStreamLoading(false); return; }
       const ref = await resolveRes.json();
 
@@ -219,11 +223,12 @@ export default function HomeAppPage() {
 
       const streamRes = await fetch(streamUrl, { headers, signal });
       if (signal.aborted) return;
-      if (streamRes.status === 401) { window.location.href = "/login"; return; }
+      if (streamRes.status === 401) { setStreamLoading(false); setPlayReq(null); setLoginOpen(true); return; }
       if (!streamRes.ok) { setStreamError("Stream not available"); setStreamLoading(false); return; }
 
       const data = await streamRes.json();
       if (type === "catchup") data.isLive = false;
+      pushUrl(`/home/watch/${uid}${begin ? `?begin=${begin}&end=${end}` : ""}`);
       setStreamData(data);
 
       // Set metadata — use preloaded or existing epgNow state instead of re-fetching
@@ -360,101 +365,58 @@ export default function HomeAppPage() {
   return (
     <div className="min-h-screen bg-[#0a0a0c]">
       {/* Header */}
-      <header className="sticky top-0 z-40 bg-[#0a0a0c]/95 backdrop-blur-md border-b border-white/[0.04]">
-        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <img src="/lanka_tv_logo.png" alt="LankaTV" className="h-8 sm:h-9" />
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/[0.04] border border-white/[0.06]">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#22c55e] animate-pulse" />
-              <span className="text-[10px] text-white/40 font-semibold">LIVE</span>
-            </div>
-            <a
-              href={signedIn ? "/m3u" : "/login"}
-              className={`text-xs transition-all px-3 py-1.5 rounded-lg font-semibold border ${
-                signedIn
-                  ? "text-white/50 hover:text-white border-[#ec1c24]/30 hover:border-[#ec1c24]/60 hover:bg-[#ec1c24]/10"
-                  : "text-white/30 border-white/[0.06] hover:border-white/[0.12]"
-              }`}
-            >
-              M3U
-            </a>
-            <a
-              href="https://t.me/yakalk_bot?text=hello"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs text-[#22c55e] hover:text-white transition-all px-3 py-1.5 rounded-lg border border-[#22c55e]/20 hover:border-[#22c55e]/50 hover:bg-[#22c55e]/10 font-semibold flex items-center gap-1.5"
-            >
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-              <span className="hidden sm:inline">Contact</span>
-            </a>
-            {authChecked && (signedIn ? (
-              <span className="text-xs text-[#22c55e] px-3 py-1.5 rounded-lg border border-[#22c55e]/20 bg-[#22c55e]/5 font-semibold">
-                ✓ Signed In
-              </span>
-            ) : (
-              <button
-                onClick={() => setLoginOpen(true)}
-                className="text-xs text-white/50 hover:text-white transition-all px-3 py-1.5 rounded-lg border border-white/[0.06] hover:border-white/[0.12] hover:bg-white/[0.04] font-semibold"
-              >
-                Sign In
-              </button>
-            ))}
-          </div>
-        </div>
-        {/* Tabs */}
-        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 pb-3 overflow-x-auto no-scrollbar">
-          <div className="flex gap-1.5 items-center">
+      <AppHeader activePage="home" />
+      {/* Tabs */}
+      <div className="max-w-[1600px] mx-auto px-4 sm:px-6 pb-3 overflow-x-auto no-scrollbar">
+        <div className="flex gap-1.5 items-center">
+          <button
+            onClick={() => handleTabChange("live")}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-bold transition-all whitespace-nowrap ${
+              currentTab === "live"
+                ? "bg-[#ec1c24] text-white shadow-[0_2px_12px_rgba(236,28,36,0.4)]"
+                : "bg-white/[0.04] text-white/50 hover:bg-white/[0.08] hover:text-white/80"
+            }`}
+          >
+            <Tv className="w-4 h-4" /> Live TV
+            <span className={`px-1.5 py-0.5 rounded text-[9px] font-extrabold ${currentTab === "live" ? "bg-white/20" : "bg-white/[0.06]"}`}>
+              {channels.length}
+            </span>
+          </button>
+          <div className="w-px h-5 bg-white/10 mx-1 flex-shrink-0" />
+          {categories.map((c) => (
             <button
-              onClick={() => handleTabChange("live")}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-bold transition-all whitespace-nowrap ${
-                currentTab === "live"
-                  ? "bg-[#ec1c24] text-white shadow-[0_2px_12px_rgba(236,28,36,0.4)]"
-                  : "bg-white/[0.04] text-white/50 hover:bg-white/[0.08] hover:text-white/80"
+              key={c.uid}
+              onClick={() => handleTabChange(`cat:${c.uid}`)}
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-[11px] sm:text-xs font-semibold transition-all whitespace-nowrap ${
+                currentTab === `cat:${c.uid}`
+                  ? "bg-white/[0.12] text-white border border-white/[0.15] shadow-[0_2px_8px_rgba(0,0,0,0.3)]"
+                  : "bg-white/[0.03] text-white/45 hover:bg-white/[0.07] hover:text-white/75 border border-transparent"
               }`}
             >
-              <Tv className="w-4 h-4" /> Live TV
-              <span className={`px-1.5 py-0.5 rounded text-[9px] font-extrabold ${currentTab === "live" ? "bg-white/20" : "bg-white/[0.06]"}`}>
-                {channels.length}
+              {c.name}
+              <span className={`px-1 py-0.5 rounded text-[8px] font-extrabold ${currentTab === `cat:${c.uid}` ? "bg-white/15 text-white/80" : "bg-white/[0.05] text-white/30"}`}>
+                {c.total}
               </span>
             </button>
-            <div className="w-px h-5 bg-white/10 mx-1 flex-shrink-0" />
-            {categories.map((c) => (
-              <button
-                key={c.uid}
-                onClick={() => handleTabChange(`cat:${c.uid}`)}
-                className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-[11px] sm:text-xs font-semibold transition-all whitespace-nowrap ${
-                  currentTab === `cat:${c.uid}`
-                    ? "bg-white/[0.12] text-white border border-white/[0.15] shadow-[0_2px_8px_rgba(0,0,0,0.3)]"
-                    : "bg-white/[0.03] text-white/45 hover:bg-white/[0.07] hover:text-white/75 border border-transparent"
-                }`}
-              >
-                {c.name}
-                <span className={`px-1 py-0.5 rounded text-[8px] font-extrabold ${currentTab === `cat:${c.uid}` ? "bg-white/15 text-white/80" : "bg-white/[0.05] text-white/30"}`}>
-                  {c.total}
-                </span>
-              </button>
-            ))}
-          </div>
+          ))}
         </div>
-        {/* Search */}
-        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 pb-3 sm:pb-4">
-          <div className="relative max-w-md">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-white/40" />
-            <input
-              type="text"
-              placeholder="Search…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="w-full pl-11 pr-4 py-2.5 bg-white/5 border border-white/10 rounded-full text-sm text-white placeholder-white/30 outline-none focus:border-[#ec1c24]"
-            />
-          </div>
+      </div>
+      {/* Search */}
+      <div className="max-w-[1600px] mx-auto px-4 sm:px-6 pb-3 sm:pb-4">
+        <div className="relative max-w-md">
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-white/40" />
+          <input
+            type="text"
+            placeholder="Search…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full pl-11 pr-4 py-2.5 bg-white/5 border border-white/10 rounded-full text-sm text-white placeholder-white/30 outline-none focus:border-[#ec1c24]"
+          />
         </div>
-      </header>
+      </div>
 
       {/* Content */}
-      <main className="max-w-[1600px] mx-auto px-4 sm:px-6 py-4 sm:py-6">
+      <main className="max-w-[1600px] mx-auto px-4 sm:px-6 py-4 sm:py-6 pb-24 sm:pb-6">
         {loading ? (
           <div className="flex flex-col items-center justify-center py-32 gap-4 text-white/50">
             <div className="w-10 h-10 border-3 border-white/10 border-t-[#ec1c24] rounded-full animate-spin" />
@@ -576,7 +538,6 @@ export default function HomeAppPage() {
             </div>
           )}
           {streamData && (
-            <Suspense>
               <VideoPlayer
                 streamUrl={streamData.url}
                 licenseUrl={streamData.license}
@@ -593,13 +554,14 @@ export default function HomeAppPage() {
                     : undefined
                 }
               />
-            </Suspense>
           )}
         </div>
       )}
 
       {/* Sign-in dialog */}
       <LoginDialog open={loginOpen} onOpenChange={setLoginOpen} />
+
+      <BottomNav activePage="home" />
     </div>
   );
 }

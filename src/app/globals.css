@@ -15,6 +15,7 @@ body {
   background: #0a0a0b;
   color: #fafafa;
   margin: 0;
+  overflow-x: hidden;
 }
 
 * {

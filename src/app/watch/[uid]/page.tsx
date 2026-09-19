@@ -30,7 +30,7 @@ export default function WatchPage() {
       const end = searchParams.get("end");
 
       const resolveRes = await fetch(`/api/uid/resolve/${uid}`, { headers, signal });
-      if (resolveRes.status === 401) { window.location.href = "/login"; return; }
+      if (resolveRes.status === 401) { window.location.href = "/?signin=1"; return; }
       if (!resolveRes.ok) { setError("Stream not found"); setLoading(false); return; }
 
       const ref = await resolveRes.json();
@@ -45,7 +45,7 @@ export default function WatchPage() {
       }
 
       const streamRes = await fetch(streamUrl, { headers, signal });
-      if (streamRes.status === 401) { window.location.href = "/login"; return; }
+      if (streamRes.status === 401) { window.location.href = "/?signin=1"; return; }
       if (!streamRes.ok) { setError("Stream not available"); setLoading(false); return; }
 
       const data = await streamRes.json();

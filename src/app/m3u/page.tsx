@@ -1,27 +1,52 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { ArrowLeft, Copy, Check, ExternalLink, Music, Tv, Trophy, Film } from "lucide-react";
+import { Copy, Check, Music, Tv, Trophy, Film } from "lucide-react";
 import { getDeviceUid } from "@/lib/auth";
+import { LoginDialog } from "@/components/login-dialog";
+import { AppHeader } from "@/components/app-header";
+import { BottomNav } from "@/components/bottom-nav";
 
 export default function M3uPage() {
   const [epgToken, setEpgToken] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState<string | null>(null);
-  const [counts, setCounts] = useState({ live: 0, movies: 0 });
+  const [signedIn, setSignedIn] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [loginOpen, setLoginOpen] = useState(false);
 
-  const fetchToken = useCallback(async (signal?: AbortSignal) => {
+  useEffect(() => {
+    const ctrl = new AbortController();
+    getDeviceUid().then((uid) => {
+      fetch("/api/auth/auto-login", {
+        method: "POST",
+        headers: { "x-device-uid": uid },
+        signal: ctrl.signal,
+      })
+        .then((r) => r.json())
+        .then((d) => {
+          if (ctrl.signal.aborted) return;
+          setSignedIn(d.signedIn || false);
+          setAuthChecked(true);
+          if (d.signedIn) fetchEpgToken(ctrl.signal);
+          else setLoading(false);
+        })
+        .catch(() => {
+          if (!ctrl.signal.aborted) { setAuthChecked(true); setLoading(false); }
+        });
+    });
+    return () => ctrl.abort();
+  }, []);
+
+  const fetchEpgToken = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     setError("");
     try {
       const uid = await getDeviceUid();
       const res = await fetch("/api/auth/epg-token", { headers: { "x-device-uid": uid }, signal });
       if (signal?.aborted) return;
-      if (res.status === 401) {
-        window.location.href = "/login";
-        return;
-      }
+      if (res.status === 401) { setSignedIn(false); setLoading(false); return; }
       const data = await res.json();
       if (data.token) setEpgToken(data.token);
       else setError(data.error || "Failed to get token");
@@ -32,11 +57,29 @@ export default function M3uPage() {
     }
   }, []);
 
-  useEffect(() => {
-    const ctrl = new AbortController();
-    fetchToken(ctrl.signal);
-    return () => ctrl.abort();
-  }, [fetchToken]);
+  const handleLoginClose = useCallback((open: boolean) => {
+    setLoginOpen(open);
+    if (!open) {
+      const ctrl = new AbortController();
+      getDeviceUid().then((uid) => {
+        fetch("/api/auth/auto-login", {
+          method: "POST",
+          headers: { "x-device-uid": uid },
+          signal: ctrl.signal,
+        })
+          .then((r) => r.json())
+          .then((d) => {
+            if (ctrl.signal.aborted) return;
+            if (d.signedIn) {
+              setSignedIn(true);
+              setLoading(true);
+              fetchEpgToken(ctrl.signal);
+            }
+          })
+          .catch(() => {});
+      });
+    }
+  }, [fetchEpgToken]);
 
   const getBaseUrl = () => {
     if (typeof window === "undefined") return "";
@@ -64,38 +107,10 @@ export default function M3uPage() {
   const uid = typeof window !== "undefined" ? localStorage.getItem("deviceUid") || "" : "";
 
   const playlists = [
-    {
-      id: "live",
-      name: "Live TV",
-      icon: Tv,
-      url: `${base}/live.m3u?uid=${uid}`,
-      description: "All live channels with catchup support",
-      color: "from-blue-500 to-cyan-500",
-    },
-    {
-      id: "movies",
-      name: "Movies",
-      icon: Music,
-      url: `${base}/movies.m3u?uid=${uid}`,
-      description: "Full movies collection with DRM",
-      color: "from-purple-500 to-pink-500",
-    },
-    {
-      id: "series",
-      name: "Series",
-      icon: Film,
-      url: `${base}/series.m3u?uid=${uid}`,
-      description: "All series episodes with DRM",
-      color: "from-emerald-500 to-teal-500",
-    },
-    {
-      id: "sports",
-      name: "Sports",
-      icon: Trophy,
-      url: `${base}/sports.m3u?uid=${uid}`,
-      description: "Sports highlights and replays",
-      color: "from-orange-500 to-amber-500",
-    },
+    { id: "live", name: "Live TV", icon: Tv, url: `${base}/live.m3u?uid=${uid}`, description: "All live channels with catchup support", color: "from-blue-500 to-cyan-500" },
+    { id: "movies", name: "Movies", icon: Music, url: `${base}/movies.m3u?uid=${uid}`, description: "Full movies collection with DRM", color: "from-purple-500 to-pink-500" },
+    { id: "series", name: "Series", icon: Film, url: `${base}/series.m3u?uid=${uid}`, description: "All series episodes with DRM", color: "from-emerald-500 to-teal-500" },
+    { id: "sports", name: "Sports", icon: Trophy, url: `${base}/sports.m3u?uid=${uid}`, description: "Sports highlights and replays", color: "from-orange-500 to-amber-500" },
   ];
 
   const epgUrls = epgToken ? [
@@ -105,37 +120,53 @@ export default function M3uPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#111] flex items-center justify-center">
-        <div className="w-10 h-10 border-4 border-white/10 border-t-[#ec1c24] rounded-full animate-spin" />
+      <div className="min-h-screen bg-[#0a0a0c]">
+        <AppHeader activePage="m3u" />
+        <div className="flex items-center justify-center py-32">
+          <div className="w-10 h-10 border-4 border-white/10 border-t-[#ec1c24] rounded-full animate-spin" />
+        </div>
+      </div>
+    );
+  }
+
+  if (!signedIn) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0c]">
+        <AppHeader activePage="m3u" />
+        <div className="flex flex-col items-center justify-center gap-4 py-32">
+          <img src="/lanka_tv_logo.png" alt="LankaTV" className="h-10 mb-4" />
+          <p className="text-white/50 text-sm">Sign in to access M3U playlists</p>
+          <button onClick={() => setLoginOpen(true)} className="px-8 py-2.5 bg-[#ec1c24] rounded-xl font-bold text-sm text-white hover:bg-[#d41a20] transition-all">
+            Sign In
+          </button>
+        </div>
+        <BottomNav activePage="m3u" />
+        <LoginDialog open={loginOpen} onOpenChange={handleLoginClose} />
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="min-h-screen bg-[#111] flex flex-col items-center justify-center gap-4">
-        <p className="text-red-400">{error}</p>
-        <button onClick={() => window.location.href = "/login"} className="px-6 py-2 bg-[#ec1c24] rounded-full font-semibold text-sm">
-          Sign In
-        </button>
+      <div className="min-h-screen bg-[#0a0a0c]">
+        <AppHeader activePage="m3u" />
+        <div className="flex flex-col items-center justify-center gap-4 py-32">
+          <p className="text-red-400">{error}</p>
+          <button onClick={() => setLoginOpen(true)} className="px-6 py-2 bg-[#ec1c24] rounded-xl font-bold text-sm">
+            Sign In
+          </button>
+        </div>
+        <BottomNav activePage="m3u" />
+        <LoginDialog open={loginOpen} onOpenChange={handleLoginClose} />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-[#111]">
-      <header className="border-b border-white/10 bg-[#111]/90 backdrop-blur sticky top-0 z-50">
-        <div className="max-w-3xl mx-auto px-4 h-14 flex items-center gap-3">
-          <a href="/" className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/10 transition-colors">
-            <ArrowLeft className="w-4 h-4" />
-          </a>
-          <h1 className="text-lg font-black tracking-tight">
-            M3U <span className="text-[#ec1c24]">Playlists</span>
-          </h1>
-        </div>
-      </header>
+    <div className="min-h-screen bg-[#0a0a0c]">
+      <AppHeader activePage="m3u" />
 
-      <main className="max-w-3xl mx-auto px-4 py-8">
+      <main className="max-w-[1600px] mx-auto px-4 sm:px-6 py-8 pb-24 sm:pb-8">
         <p className="text-white/40 text-sm mb-8">
           Copy these links into your IPTV player (Kodi, VLC, Smart TV, etc.)
         </p>
@@ -144,7 +175,7 @@ export default function M3uPage() {
           {playlists.map((pl) => {
             const Icon = pl.icon;
             return (
-              <div key={pl.id} className="bg-[#1c1c1c] border border-white/10 rounded-xl overflow-hidden">
+              <div key={pl.id} className="bg-[#141416] border border-white/[0.06] rounded-xl overflow-hidden">
                 <div className={`bg-gradient-to-r ${pl.color} p-4 flex items-center gap-3`}>
                   <Icon className="w-5 h-5 text-white" />
                   <div>
@@ -182,7 +213,7 @@ export default function M3uPage() {
             <h3 className="text-sm font-bold text-white/60 mb-3">EPG Endpoints</h3>
             <div className="space-y-2">
               {epgUrls.map((epg) => (
-                <div key={epg.label} className="bg-[#1c1c1c] border border-white/10 rounded-lg p-3 flex items-center gap-2">
+                <div key={epg.label} className="bg-[#141416] border border-white/[0.06] rounded-lg p-3 flex items-center gap-2">
                   <span className="text-xs text-white/50 w-20 shrink-0">{epg.label}</span>
                   <input
                     readOnly
@@ -202,6 +233,9 @@ export default function M3uPage() {
           </div>
         )}
       </main>
+
+      <BottomNav activePage="m3u" />
+      <LoginDialog open={loginOpen} onOpenChange={handleLoginClose} />
     </div>
   );
 }
