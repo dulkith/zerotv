@@ -1801,62 +1801,64 @@ expressApp.post("/api/auth/verify-otp", async (req, res) => {
   if (!/^\d{6}$/.test(otpCode)) return res.status(400).json({ error: "Code must be 6 digits" });
 
   try {
+    // Fresh devices must follow this exact sequence (verified against the
+    // live Viu API): (1) send_otp [done in /send-otp], (2) OTP_LOGIN which
+    // VALIDATES the OTP and returns 4062 "Device not found" when the device
+    // is new — the 4062 is expected, not an error, (3) register the device,
+    // (4) "Mac" login which returns tokens WITHOUT needing the OTP again.
     let r = await otpLoginViu({ mobile: check.number!, otpCode, device });
+    log(`[auth] OTP_LOGIN → HTTP ${r.status} code=${r.data?.code} msg=${String((r.data?.data as Record<string, unknown>)?.message || "").slice(0, 80)}`);
 
-    // 4062 = device not registered → register device via registration.viu.lk flow, then retry
     const errCode = r.data?.code;
     const errMsg = (r.data?.data as Record<string, unknown>)?.message || "";
-    if (errCode === 4062 || String(errMsg).includes("Device not found")) {
-      log(`[auth] Device ${deviceUid.slice(0, 8)}… not found — registering via Viu registration API`);
+    const needsRegistration = errCode === 4062 || String(errMsg).includes("Device not found");
+
+    if (needsRegistration) {
+      log(`[auth] Device ${deviceUid.slice(0, 8)}… is fresh — registering (OTP was verified by the 4062)`);
       try {
-        // Step 1: Start registration session → get registration JWT + trace_id
+        // Step 1: Start registration session → registration JWT + trace_id
         const startRes = await startRegistration();
-        log(`[auth] Registration start → HTTP ${startRes.status} body: ${JSON.stringify(startRes.data).slice(0, 500)}`);
+        log(`[auth] Registration start → HTTP ${startRes.status}`);
 
-        if (startRes.status >= 200 && startRes.status < 300) {
-          // Extract registration token from data.access_token
-          const regToken = startRes.data?.data?.access_token
-            || startRes.data?.data?.token
-            || startRes.data?.access_token
-            || startRes.data?.token;
+        const regToken = startRes.data?.data?.access_token
+          || startRes.data?.data?.token
+          || startRes.data?.access_token
+          || startRes.data?.token;
+        let traceId = (startRes.data?.data?.trace_id as string)
+          || (startRes.data?.trace_id as string)
+          || "";
+        if (!traceId && regToken) {
+          try {
+            const payload = JSON.parse(Buffer.from(String(regToken).split(".")[1], "base64url").toString("utf8"));
+            traceId = payload.trace_id || "";
+          } catch (e) {
+            log(`[auth] JWT decode failed: ${(e as Error).message}`);
+          }
+        }
 
-          log(`[auth] Registration token found: ${regToken ? "yes (" + String(regToken).slice(0, 30) + "...)" : "no"}`);
+        if (!regToken || !traceId) {
+          log(`[auth] Registration aborted: token=${!!regToken} traceId=${!!traceId}`);
+        } else {
+          // Step 2: Register the device
+          const regResult = await registerDeviceV2(regToken, {
+            mobileNumber: check.number!,
+            deviceUid: device.deviceUid,
+            deviceClass: device.deviceClass || "SMART_TV",
+            deviceType: device.deviceType || "SMART_TV",
+            deviceOS: device.deviceOS || "WEBOS",
+            traceId,
+          });
+          log(`[auth] Device register → HTTP ${regResult.status} body: ${JSON.stringify(regResult.data).slice(0, 300)}`);
 
-          if (regToken && typeof regToken === "string") {
-            // Extract trace_id: prefer from response body, fallback to JWT decode
-            let traceId = (startRes.data?.data?.trace_id as string)
-              || (startRes.data?.trace_id as string)
-              || "";
-            if (!traceId) {
-              try {
-                const payload = JSON.parse(Buffer.from(regToken.split(".")[1], "base64url").toString("utf8"));
-                traceId = payload.trace_id || "";
-              } catch (e) {
-                log(`[auth] JWT decode failed: ${(e as Error).message}`);
-              }
-            }
-            log(`[auth] Registration trace_id: ${traceId}`);
-
-            if (traceId) {
-              // Step 2: Register device with the registration JWT
-              const regResult = await registerDeviceV2(regToken, {
-                mobileNumber: check.number!,
-                deviceUid: device.deviceUid,
-                deviceClass: device.deviceClass || "SMART_TV",
-                deviceType: device.deviceType || "SMART_TV",
-                deviceOS: device.deviceOS || "WEBOS",
-                traceId,
-              });
-              log(`[auth] Device register → HTTP ${regResult.status} body: ${JSON.stringify(regResult.data).slice(0, 500)}`);
-
-              if (regResult.status >= 200 && regResult.status < 300) {
-                log(`[auth] Device registered — retrying login with Mac type (no OTP needed)`);
-                r = await finalLogin(device);
-                log(`[auth] Post-registration login → HTTP ${r.status} code=${r.data?.code} hasToken=${!!(r.data?.data as Record<string, unknown>)?.access_token}`);
-              }
-            }
-          } else {
-            log(`[auth] Full registration response: ${JSON.stringify(startRes.data).slice(0, 1000)}`);
+          // Step 3: "Mac" login — no OTP needed once the device is registered.
+          // Retry a couple of times: registration is occasionally not visible
+          // to the login endpoint immediately.
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            r = await finalLogin(device);
+            const hasToken = !!(r.data?.data as Record<string, unknown>)?.access_token;
+            log(`[auth] Mac login attempt ${attempt} → HTTP ${r.status} code=${r.data?.code} hasToken=${hasToken}`);
+            if (hasToken) break;
+            await new Promise((rr) => setTimeout(rr, 700 * attempt));
           }
         }
       } catch (regErr) {
