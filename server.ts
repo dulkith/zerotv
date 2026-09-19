@@ -2818,6 +2818,7 @@ expressApp.all("/api/drm/:token", (req, res) => {
       }
 
       const accessToken = latest?.access_token as string | undefined;
+      log(`[drm-fp] storedLicenseUrl=${storedLicenseUrl ? "yes" : "null"} hasToken=${!!accessToken} accessValid=${latest ? isAccessTokenValid(latest) : false} deviceUid=${deviceUid?.slice(0, 8)} kind=${info.kind} assetId=${fpAssetId?.slice(0, 20)}`);
 
       if (storedLicenseUrl && accessToken && isAccessTokenValid(latest!)) {
         proxyFairPlay(storedLicenseUrl, accessToken);
@@ -2829,6 +2830,8 @@ expressApp.all("/api/drm/:token", (req, res) => {
       ensureDeviceAccessToken(deviceUid).then(async (token) => {
         if (!token) return res.status(502).json({ error: "no access token" });
         const updated = loadLatestTokens(deviceUid);
+        const userId = String(updated?.user_id || "918558");
+        const contentUid = info.kind === "tv" ? "channelone" : (info.contentUid || "23145");
 
         let licenseUrl = info.kind === "tv"
           ? (updated?.fp_license_proxy_url_live as string) || null
@@ -2839,6 +2842,31 @@ expressApp.all("/api/drm/:token", (req, res) => {
             ? (updated?.wv_license_proxy_url_live as string) || null
             : (updated?.wv_license_proxy_url_vod as string) || null;
           if (wvUrl) licenseUrl = wvUrl.replace("/wv/license", "/fp/license");
+        }
+
+        if (!licenseUrl) {
+          log(`[drm-fp] fetch-on-demand: userId=${userId} kind=${info.kind} contentUid=${contentUid}`);
+          let wvUrl = info.kind === "tv"
+            ? await fetchWvLicenseProxyUrlLive(token, userId, contentUid)
+            : await fetchWvLicenseProxyUrlVod(token, contentUid, userId);
+          log(`[drm-fp] wvUrl=${wvUrl ? wvUrl.substring(0, 60) + "..." : "null"}`);
+          if (!wvUrl) {
+            const fallbackFn = info.kind === "tv" ? fetchWvLicenseProxyUrlVod : fetchWvLicenseProxyUrlLive;
+            wvUrl = await fallbackFn(token, "23145", userId);
+          }
+          if (wvUrl) licenseUrl = wvUrl.replace("/wv/license", "/fp/license");
+
+          if (wvUrl && updated) {
+            const store = loadTokensStore();
+            const arr = store[deviceUid] as Array<Record<string, unknown>> | undefined;
+            if (arr && arr.length > 0) {
+              const last = arr[arr.length - 1];
+              const t = (last.tokens || last.widevine || last) as Record<string, unknown>;
+              if (info.kind === "tv") t.wv_license_proxy_url_live = wvUrl;
+              else t.wv_license_proxy_url_vod = wvUrl;
+              saveTokensStore(store);
+            }
+          }
         }
 
         if (!licenseUrl) return res.status(502).json({ error: "no fp license url" });

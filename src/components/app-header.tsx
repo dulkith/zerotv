@@ -5,9 +5,10 @@ import { Tv, QrCode, X } from "lucide-react";
 
 interface AppHeaderProps {
   activePage?: "landing" | "home" | "m3u";
+  onSignIn?: () => void;
 }
 
-export function AppHeader({ activePage }: AppHeaderProps) {
+export function AppHeader({ activePage, onSignIn }: AppHeaderProps) {
   const [signedIn, setSignedIn] = useState(false);
   const [qrOpen, setQrOpen] = useState(false);
   const [qrImage, setQrImage] = useState("");
@@ -77,9 +78,9 @@ export function AppHeader({ activePage }: AppHeaderProps) {
               </button>
             )}
             {!signedIn && (
-              <a href="/" className="flex items-center gap-1.5 text-xs text-white/60 hover:text-white transition-all px-3 py-1.5 rounded-lg border border-white/[0.08] hover:border-white/[0.2] hover:bg-white/[0.04] font-semibold">
+              <button onClick={onSignIn} className="flex items-center gap-1.5 text-xs text-white/60 hover:text-white transition-all px-3 py-1.5 rounded-lg border border-white/[0.08] hover:border-white/[0.2] hover:bg-white/[0.04] font-semibold">
                 Sign In
-              </a>
+              </button>
             )}
             {signedIn && activePage !== "home" && (
               <a href="/home" className="flex items-center gap-1.5 text-xs text-white/80 hover:text-white px-3 py-1.5 rounded-lg bg-[#ec1c24] hover:bg-[#d41a20] font-bold transition-all shadow-[0_2px_10px_rgba(236,28,36,0.25)]">

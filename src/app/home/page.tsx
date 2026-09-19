@@ -365,7 +365,7 @@ export default function HomeAppPage() {
   return (
     <div className="min-h-screen bg-[#0a0a0c]">
       {/* Header */}
-      <AppHeader activePage="home" />
+      <AppHeader activePage="home" onSignIn={() => setLoginOpen(true)} />
       {/* Tabs */}
       <div className="max-w-[1600px] mx-auto px-4 sm:px-6 pb-3 overflow-x-auto no-scrollbar">
         <div className="flex gap-1.5 items-center">

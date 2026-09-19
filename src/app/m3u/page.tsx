@@ -121,7 +121,7 @@ export default function M3uPage() {
   if (loading) {
     return (
       <div className="min-h-screen bg-[#0a0a0c]">
-        <AppHeader activePage="m3u" />
+        <AppHeader activePage="m3u" onSignIn={() => setLoginOpen(true)} />
         <div className="flex items-center justify-center py-32">
           <div className="w-10 h-10 border-4 border-white/10 border-t-[#ec1c24] rounded-full animate-spin" />
         </div>
@@ -132,7 +132,7 @@ export default function M3uPage() {
   if (!signedIn) {
     return (
       <div className="min-h-screen bg-[#0a0a0c]">
-        <AppHeader activePage="m3u" />
+        <AppHeader activePage="m3u" onSignIn={() => setLoginOpen(true)} />
         <div className="flex flex-col items-center justify-center gap-4 py-32">
           <img src="/lanka_tv_logo.png" alt="LankaTV" className="h-10 mb-4" />
           <p className="text-white/50 text-sm">Sign in to access M3U playlists</p>
@@ -149,7 +149,7 @@ export default function M3uPage() {
   if (error) {
     return (
       <div className="min-h-screen bg-[#0a0a0c]">
-        <AppHeader activePage="m3u" />
+        <AppHeader activePage="m3u" onSignIn={() => setLoginOpen(true)} />
         <div className="flex flex-col items-center justify-center gap-4 py-32">
           <p className="text-red-400">{error}</p>
           <button onClick={() => setLoginOpen(true)} className="px-6 py-2 bg-[#ec1c24] rounded-xl font-bold text-sm">
@@ -164,7 +164,7 @@ export default function M3uPage() {
 
   return (
     <div className="min-h-screen bg-[#0a0a0c]">
-      <AppHeader activePage="m3u" />
+      <AppHeader activePage="m3u" onSignIn={() => setLoginOpen(true)} />
 
       <main className="max-w-[1600px] mx-auto px-4 sm:px-6 py-8 pb-24 sm:pb-8">
         <p className="text-white/40 text-sm mb-8">

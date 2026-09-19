@@ -52,7 +52,7 @@ export default function LandingPage() {
   return (
     <div className="min-h-screen bg-[#0a0a0c]">
       <div className="flex flex-col bg-[#0a0a0c] min-h-screen overflow-x-hidden">
-        <AppHeader activePage="landing" />
+        <AppHeader activePage="landing" onSignIn={() => setLoginOpen(true)} />
 
         {/* Hero */}
         <div className="relative flex-1 flex flex-col">
