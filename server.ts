@@ -626,7 +626,7 @@ function pickClient() {
   return sockets[SOCKET_STATS.rrIndex++ % sockets.length];
 }
 
-function delegateResolve(url: string, timeoutMs = SOCKET_RESOLVE_TIMEOUT_MS, fetchBody = false): Promise<{ finalUrl: string; httpStatus: number; hops: number; contentType: string; body?: Buffer }> {
+function delegateResolve(url: string, timeoutMs = SOCKET_RESOLVE_TIMEOUT_MS, fetchBody = false): Promise<{ finalUrl: string; httpStatus: number; hops: number; contentType: string; body?: Buffer; pssh?: string }> {
   return new Promise((resolve, reject) => {
     const socket = pickClient();
     if (!socket) return reject(new Error("No socket client connected"));
@@ -642,7 +642,7 @@ function delegateResolve(url: string, timeoutMs = SOCKET_RESOLVE_TIMEOUT_MS, fet
       clearTimeout(pending.timer);
       PENDING_RESOLVES.delete(id);
       if (!response || response.status !== "ok") return reject(new Error(String(response?.message || "unknown error")));
-      const result: { finalUrl: string; httpStatus: number; hops: number; contentType: string; body?: Buffer } = {
+      const result: { finalUrl: string; httpStatus: number; hops: number; contentType: string; body?: Buffer; pssh?: string } = {
         finalUrl: String(response.manifest || ""),
         httpStatus: Number(response.httpStatus || 200),
         hops: Number(response.hops || 1),
@@ -650,6 +650,9 @@ function delegateResolve(url: string, timeoutMs = SOCKET_RESOLVE_TIMEOUT_MS, fet
       };
       if (response.body && typeof response.body === "string") {
         result.body = Buffer.from(String(response.body), "base64");
+      }
+      if (response.pssh && typeof response.pssh === "string") {
+        result.pssh = response.pssh;
       }
       resolve(result);
     });
@@ -2414,8 +2417,9 @@ expressApp.all("/api/stream/t/:token", async (req, res) => {
       return res.send(cachedMpd);
     }
     const originalUrl = `https://${host}${rest}`;
-    let resolved: { finalUrl: string; httpStatus: number; hops: number; contentType: string; body?: Buffer } | null = null;
+    let resolved: { finalUrl: string; httpStatus: number; hops: number; contentType: string; body?: Buffer; pssh?: string } | null = null;
     let resolverBody: Buffer | null = null;
+    let resolverPssh: string | null = null;
 
     if (pickClient()) {
       try {
@@ -2424,6 +2428,10 @@ expressApp.all("/api/stream/t/:token", async (req, res) => {
         if (resolved.body && resolved.body.length > 0) {
           resolverBody = resolved.body;
           log(`[stream] resolver returned body: ${resolverBody.length}b`);
+        }
+        if (resolved.pssh) {
+          resolverPssh = resolved.pssh;
+          log(`[stream] resolver returned pssh: ${resolverPssh.length}b`);
         }
       } catch {}
     }
@@ -2443,13 +2451,18 @@ expressApp.all("/api/stream/t/:token", async (req, res) => {
       return res.redirect(302, `https://${applyCdn(host)}${rest}`);
     }
 
-    if (isLive || isVod || isCatchup) {
+    if (isLive || isVod) {
       if (LIVE_REDIRECT) {
         const target = applyCdn(resolved.finalUrl);
-        log(`[stream] redirecting to CDN (${isCatchup ? "catchup" : isVod ? "vod" : "live"}) ${target.substring(0, 80)}`);
+        log(`[stream] redirecting to CDN (${isVod ? "vod" : "live"}) ${target.substring(0, 80)}`);
         res.setHeader("Access-Control-Allow-Origin", "*");
         return res.redirect(302, target);
       }
+    }
+    if (isCatchup && !resolverBody) {
+      log(`[stream] catchup needs body but no resolver body, redirecting to CDN`);
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      return res.redirect(302, applyCdn(resolved.finalUrl));
     }
 
     const cdnUrl = applyCdn(resolved.finalUrl);
@@ -2527,12 +2540,18 @@ expressApp.all("/api/stream/t/:token", async (req, res) => {
       const cm = rest.match(/\/bpk-tv\/([^/]+)\//);
       const channelKey = cm ? cm[1] : "unknown";
       const psshKey = channelKey;
-      pssh = psshCacheGet(psshKey);
-      if (!pssh) {
-        try {
-          pssh = await fetchPsshFromAudio(cdnUrl, Buffer.from(xml, "utf8"));
-          if (pssh) psshCacheSet(psshKey, pssh);
-        } catch (e) { log(`[stream] pssh fetch failed: ${(e as Error).message}`); }
+      if (resolverPssh) {
+        pssh = resolverPssh;
+        psshCacheSet(psshKey, pssh);
+        log(`[stream] using resolver pssh for ${channelKey}`);
+      } else {
+        pssh = psshCacheGet(psshKey);
+        if (!pssh) {
+          try {
+            pssh = await fetchPsshFromAudio(cdnUrl, Buffer.from(xml, "utf8"));
+            if (pssh) psshCacheSet(psshKey, pssh);
+          } catch (e) { log(`[stream] pssh fetch failed: ${(e as Error).message}`); }
+        }
       }
     }
     xml = rewriteBaseUrl(xml, newBaseFinal);
