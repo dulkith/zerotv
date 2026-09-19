@@ -8,7 +8,7 @@ import { LoginDialog } from "@/components/login-dialog";
 import { VideoPlayer } from "@/components/video-player";
 import { AppHeader } from "@/components/app-header";
 import { BottomNav } from "@/components/bottom-nav";
-import { getDeviceUid } from "@/lib/auth";
+import { getDeviceUid, checkAutoLogin } from "@/lib/auth";
 import type { Channel, Category, VodItem } from "@/types";
 
 const VodDetail = lazy(() => import("@/components/vod-detail").then((m) => ({ default: m.VodDetail })));
@@ -44,7 +44,7 @@ interface PlayRequest {
 
 interface StreamData {
   url: string;
-  license: string;
+  licenseWv?: string;
   licenseFp?: string;
   isLive: boolean;
 }
@@ -112,15 +112,10 @@ export default function HomeAppPage() {
       .then((r) => r.json())
       .then((d) => { if (!ctrl.signal.aborted) setEpgNow(d.now || {}); })
       .catch(() => {});
-    getDeviceUid().then((uid) => {
-      fetch("/api/auth/auto-login", {
-        method: "POST",
-        headers: { "x-device-uid": uid },
-        signal: ctrl.signal,
-      })
-        .then((r) => r.json())
-        .then((d) => { if (!ctrl.signal.aborted) { setSignedIn(d.signedIn || false); setAuthChecked(true); } })
-        .catch(() => { if (!ctrl.signal.aborted) setAuthChecked(true); });
+    checkAutoLogin().then((d) => {
+      if (ctrl.signal.aborted) return;
+      setSignedIn(d.signedIn);
+      setAuthChecked(true);
     });
     const interval = setInterval(() => {
       fetch("/api/epg/now")
@@ -540,7 +535,7 @@ export default function HomeAppPage() {
           {streamData && (
               <VideoPlayer
                 streamUrl={streamData.url}
-                licenseUrl={streamData.license}
+                licenseUrl={streamData.licenseWv}
                 licenseFp={streamData.licenseFp}
                 title={streamMeta.title}
                 subtitle={streamMeta.subtitle}

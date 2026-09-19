@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { Tv, QrCode, X } from "lucide-react";
+import { checkAutoLogin, getDeviceUid } from "@/lib/auth";
 
 interface AppHeaderProps {
   activePage?: "landing" | "home" | "m3u";
@@ -17,19 +18,11 @@ export function AppHeader({ activePage, onSignIn }: AppHeaderProps) {
   const [qrCopied, setQrCopied] = useState(false);
 
   useEffect(() => {
-    const ctrl = new AbortController();
-    const { getDeviceUid } = require("@/lib/auth");
-    getDeviceUid().then((uid: string) => {
-      fetch("/api/auth/auto-login", {
-        method: "POST",
-        headers: { "x-device-uid": uid },
-        signal: ctrl.signal,
-      })
-        .then((r: Response) => r.json())
-        .then((d: any) => { if (!ctrl.signal.aborted) setSignedIn(d.signedIn || false); })
-        .catch(() => {});
+    let active = true;
+    checkAutoLogin().then((d) => {
+      if (active) setSignedIn(d.signedIn);
     });
-    return () => ctrl.abort();
+    return () => { active = false; };
   }, []);
 
   const generateQr = useCallback(async () => {
@@ -37,7 +30,6 @@ export function AppHeader({ activePage, onSignIn }: AppHeaderProps) {
     setQrOpen(true);
     setQrImage("");
     try {
-      const { getDeviceUid } = require("@/lib/auth");
       const uid = await getDeviceUid();
       const res = await fetch("/api/auth/qr-generate", { method: "POST", headers: { "x-device-uid": uid } });
       if (res.ok) {

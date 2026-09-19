@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { Copy, Check, Music, Tv, Trophy, Film } from "lucide-react";
-import { getDeviceUid } from "@/lib/auth";
+import { getDeviceUid, checkAutoLogin } from "@/lib/auth";
 import { LoginDialog } from "@/components/login-dialog";
 import { AppHeader } from "@/components/app-header";
 import { BottomNav } from "@/components/bottom-nav";
@@ -15,29 +15,6 @@ export default function M3uPage() {
   const [signedIn, setSignedIn] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
-
-  useEffect(() => {
-    const ctrl = new AbortController();
-    getDeviceUid().then((uid) => {
-      fetch("/api/auth/auto-login", {
-        method: "POST",
-        headers: { "x-device-uid": uid },
-        signal: ctrl.signal,
-      })
-        .then((r) => r.json())
-        .then((d) => {
-          if (ctrl.signal.aborted) return;
-          setSignedIn(d.signedIn || false);
-          setAuthChecked(true);
-          if (d.signedIn) fetchEpgToken(ctrl.signal);
-          else setLoading(false);
-        })
-        .catch(() => {
-          if (!ctrl.signal.aborted) { setAuthChecked(true); setLoading(false); }
-        });
-    });
-    return () => ctrl.abort();
-  }, []);
 
   const fetchEpgToken = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
@@ -57,26 +34,28 @@ export default function M3uPage() {
     }
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    checkAutoLogin().then((d) => {
+      if (!active) return;
+      setSignedIn(d.signedIn);
+      setAuthChecked(true);
+      if (d.signedIn) fetchEpgToken();
+      else setLoading(false);
+    });
+    return () => { active = false; };
+  }, [fetchEpgToken]);
+
   const handleLoginClose = useCallback((open: boolean) => {
     setLoginOpen(open);
     if (!open) {
-      const ctrl = new AbortController();
-      getDeviceUid().then((uid) => {
-        fetch("/api/auth/auto-login", {
-          method: "POST",
-          headers: { "x-device-uid": uid },
-          signal: ctrl.signal,
-        })
-          .then((r) => r.json())
-          .then((d) => {
-            if (ctrl.signal.aborted) return;
-            if (d.signedIn) {
-              setSignedIn(true);
-              setLoading(true);
-              fetchEpgToken(ctrl.signal);
-            }
-          })
-          .catch(() => {});
+      // The user may have just signed in, so bypass the cache and re-check.
+      checkAutoLogin(true).then((d) => {
+        if (d.signedIn) {
+          setSignedIn(true);
+          setLoading(true);
+          fetchEpgToken();
+        }
       });
     }
   }, [fetchEpgToken]);

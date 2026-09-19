@@ -5,7 +5,7 @@ import { imgUrl } from "@/lib/viu";
 
 interface VideoPlayerProps {
   streamUrl: string;
-  licenseUrl: string;
+  licenseUrl?: string;
   licenseFp?: string;
   title: string;
   subtitle?: string;
@@ -201,12 +201,17 @@ export function VideoPlayer({ streamUrl, licenseUrl, licenseFp, title, subtitle,
         setError(d?.message || `Error ${d?.code}`);
       });
 
-      const isIos = /iP(hone|ad|od)/i.test(navigator.userAgent);
-      const drmType = (licenseFp && isIos) ? "fairplay" : "widevine";
-      console.log("[shaka] DRM type:", drmType, "ios:", isIos, "fp:", !!licenseFp, "licenseFp:", licenseFp, "licenseWv:", licenseUrl, "stream:", streamUrl);
+      // FairPlay is required by every WebKit/Safari browser (iOS, iPadOS and
+      // macOS Safari). They cannot use Widevine, so pick the FairPlay token.
+      const ua = navigator.userAgent;
+      const isAppleMobile = /iPad|iPhone|iPod/i.test(ua);
+      const isSafari = isAppleMobile || (/Safari/i.test(ua) && !/Chrome|Chromium|Edg|CriOS|FxiOS|OPR|Android/i.test(ua));
+      const drmType = (licenseFp && isSafari) ? "fairplay" : "widevine";
+      console.log("[shaka] DRM type:", drmType, "safari:", isSafari, "fp:", !!licenseFp, "licenseFp:", licenseFp, "licenseWv:", licenseUrl, "stream:", streamUrl);
 
       const config: Record<string, unknown> = {
         drm: { retryParameters: { maxAttempts: 3, baseDelay: 500, backoffFactor: 2, timeout: 30000 } },
+        streaming: { retryParameters: { maxAttempts: 3, baseDelay: 500, backoffFactor: 2, timeout: 30000 } },
       };
 
       if (drmType === "fairplay" && licenseFp) {
@@ -218,6 +223,10 @@ export function VideoPlayer({ streamUrl, licenseUrl, licenseFp, title, subtitle,
           "com.apple.fps": { serverCertificateUri: "/cert" },
           "com.apple.fps.1_0": { serverCertificateUri: "/cert" },
         };
+        // Safari can only do FairPlay through its native (webkit) HLS path.
+        // This keeps encrypted MP2T off MSE (which Safari can't decrypt) and
+        // is the non-deprecated name for the old useNativeHlsOnSafari flag.
+        (config.streaming as Record<string, unknown>).useNativeHlsForFairPlay = true;
       } else if (licenseUrl) {
         (config.drm as Record<string, unknown>).servers = { "com.widevine.alpha": licenseUrl };
       }
@@ -337,7 +346,9 @@ export function VideoPlayer({ streamUrl, licenseUrl, licenseFp, title, subtitle,
   return (
     <div
       ref={containerRef}
-      className={`fixed inset-0 bg-black z-50 select-none ${idle ? "cursor-none" : ""}`}
+      // h-dvh (dynamic viewport height) instead of inset-0/bottom-0: on mobile
+      // the browser's bottom nav/URL bar would otherwise cover the controls.
+      className={`fixed top-0 inset-x-0 h-dvh bg-black z-50 select-none ${idle ? "cursor-none" : ""}`}
       onMouseMove={showUI}
       onClick={togglePlay}
     >

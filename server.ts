@@ -1080,27 +1080,27 @@ function extractAssetId(realPath: string): string {
   return "";
 }
 
-function detectIos(req: any): boolean {
-  const ua = (req.headers?.["user-agent"] || "") as string;
-  return /iP(hone|ad|od)/i.test(ua);
+// FairPlay is required by EVERY WebKit/Safari browser: iOS & iPadOS (all
+// browsers there are WebKit, incl. Chrome/Firefox) and Safari on macOS. None
+// of them can do Widevine, so they need an HLS manifest + a FairPlay license.
+function needsFairPlay(ua: string): boolean {
+  if (/iPad|iPhone|iPod/i.test(ua)) return true;
+  // macOS Safari — also matches iPadOS 13+ "desktop mode" UA. Chrome/Edge/
+  // Opera/Firefox also advertise "Safari", so exclude them explicitly.
+  return /Safari/i.test(ua) && !/Chrome|Chromium|Edg|CriOS|FxiOS|OPR|Android/i.test(ua);
 }
 
-function issueStreamResponse(kind: string, licenseKind: string, realPath: string, deviceUid?: string, contentUid?: string, isIos = false) {
+function issueStreamResponse(kind: string, licenseKind: string, realPath: string, deviceUid?: string, contentUid?: string) {
   const streamToken = encryptStreamPath(realPath, STREAM_TOKEN_TTL_MS);
   const assetId = extractAssetId(realPath);
-  if (isIos) {
-    const fpToken = signDrmToken(licenseKind, DRM_LICENSE_TTL_MS, deviceUid, "fp", assetId, contentUid);
-    return {
-      url: `/api/stream/t/${streamToken}`,
-      licenseFp: `/api/drm/${fpToken}`,
-      licenseExpires: Date.now() + DRM_LICENSE_TTL_MS,
-      streamExpires: Date.now() + STREAM_TOKEN_TTL_MS,
-      isLive: kind === "live" || kind === "catchup",
-    };
-  }
+  // Always issue BOTH tokens and let the client pick — the browser knows its
+  // own DRM capability at runtime (see video-player.tsx), which is more
+  // reliable than guessing from the User-Agent on the server.
+  const fpToken = signDrmToken(licenseKind, DRM_LICENSE_TTL_MS, deviceUid, "fp", assetId, contentUid);
   const wvToken = signDrmToken(licenseKind, DRM_LICENSE_TTL_MS, deviceUid, "wv");
   return {
     url: `/api/stream/t/${streamToken}`,
+    licenseFp: `/api/drm/${fpToken}`,
     licenseWv: `/api/drm/${wvToken}`,
     licenseExpires: Date.now() + DRM_LICENSE_TTL_MS,
     streamExpires: Date.now() + STREAM_TOKEN_TTL_MS,
@@ -1774,6 +1774,11 @@ expressApp.post("/api/auth/send-otp", (req, res) => {
   const check = normalizeMobile(rawMobile);
   if (!check.ok) return res.status(400).json({ error: check.error });
 
+  // The user pressed "Continue" with a valid number — a device record is
+  // created here and ONLY here (plus explicit sign-in paths like verify-otp /
+  // qr-claim). Read paths (auto-login, data APIs) must never auto-create one.
+  getOrCreateDevice(deviceUid);
+
   viuSendOtp(check.number!)
     .then((r) => {
       if (r.status === 200 && r.data?.status === "ok") {
@@ -2287,9 +2292,8 @@ expressApp.get("/api/stream/live/:chUid", requireStreamAuth, (req, res) => {
   const realPath = `bpcdn.dialog.lk/bpk-tv/${realChId}/out/index.mpd`;
   res.setHeader("Cache-Control", "no-store");
   const contentUid = req.params.chUid;
-  const isIos = detectIos(req);
-  const resp = issueStreamResponse("live", "tv", realPath, (req as Record<string, unknown>).deviceUid as string, contentUid, isIos);
-  log("[stream-live] response keys:", Object.keys(resp).join(","), "fp:", resp.licenseFp ? "yes" : "no", "ios:", isIos);
+  const resp = issueStreamResponse("live", "tv", realPath, (req as Record<string, unknown>).deviceUid as string, contentUid);
+  log("[stream-live] response keys:", Object.keys(resp).join(","), "fp:", resp.licenseFp ? "yes" : "no", "wv:", resp.licenseWv ? "yes" : "no", "fairplay:", needsFairPlay((req.headers["user-agent"] || "") as string));
   res.json(resp);
 });
 
@@ -2313,7 +2317,7 @@ expressApp.get("/api/stream/movie/:uid", requireStreamAuth, (req, res) => {
   const cm = "0-" + viuUid;
   const realPath = `bpcdn.dialog.lk/bpk-vod/vodprod/output/${cm}/${cm}/index.mpd`;
   res.setHeader("Cache-Control", "no-store");
-  res.json(issueStreamResponse("movie", "content", realPath, (req as Record<string, unknown>).deviceUid as string, viuUid, detectIos(req)));
+  res.json(issueStreamResponse("movie", "content", realPath, (req as Record<string, unknown>).deviceUid as string, viuUid));
 });
 
 expressApp.get("/api/stream/episode/:uid", requireStreamAuth, (req, res) => {
@@ -2323,7 +2327,7 @@ expressApp.get("/api/stream/episode/:uid", requireStreamAuth, (req, res) => {
   if (!cm) return res.status(404).json({ error: "episode not indexed — reload the series page" });
   const realPath = `bpcdn.dialog.lk/bpk-vod/vodprod/output/${cm}/${cm}/index.mpd`;
   res.setHeader("Cache-Control", "no-store");
-  res.json(issueStreamResponse("episode", "content", realPath, (req as Record<string, unknown>).deviceUid as string, ref.realId as string, detectIos(req)));
+  res.json(issueStreamResponse("episode", "content", realPath, (req as Record<string, unknown>).deviceUid as string, ref.realId as string));
 });
 
 expressApp.get("/api/stream/catchup/:chUid", requireStreamAuth, (req, res) => {
@@ -2339,7 +2343,7 @@ expressApp.get("/api/stream/catchup/:chUid", requireStreamAuth, (req, res) => {
   if (!realChId) return res.status(404).json({ error: "no channel" });
   const realPath = `bpcdn.dialog.lk/bpk-tv/${realChId}/out/index.mpd?begin=${encodeURIComponent(String(begin))}&end=${encodeURIComponent(String(end))}`;
   res.setHeader("Cache-Control", "no-store");
-  res.json(issueStreamResponse("catchup", "tv", realPath, (req as Record<string, unknown>).deviceUid as string, req.params.chUid, detectIos(req)));
+  res.json(issueStreamResponse("catchup", "tv", realPath, (req as Record<string, unknown>).deviceUid as string, req.params.chUid));
 });
 
 expressApp.get("/api/stream/trailer/:uid", requireStreamAuth, async (req, res) => {
@@ -2353,7 +2357,7 @@ expressApp.get("/api/stream/trailer/:uid", requireStreamAuth, async (req, res) =
     const cm = String(d.cm_trailer);
     const realPath = `bpcdn.dialog.lk/bpk-vod/vodprod/output/${cm}/${cm}/index.mpd`;
     res.setHeader("Cache-Control", "no-store");
-    res.json(issueStreamResponse("trailer", "content", realPath, (req as Record<string, unknown>).deviceUid as string, undefined, detectIos(req)));
+    res.json(issueStreamResponse("trailer", "content", realPath, (req as Record<string, unknown>).deviceUid as string, undefined));
   } catch {
     if (!res.headersSent) res.status(502).json({ error: "upstream" });
   }
@@ -2393,7 +2397,9 @@ expressApp.all("/api/stream/t/:token", async (req, res) => {
     const isBpkToken = rest.includes("/bpk-token/");
 
     const ua = (req.headers["user-agent"] || "") as string;
-    const isSafariUA = /Safari/i.test(ua) && !/Chrome|Chromium|Edg|CriOS|FxiOS/i.test(ua);
+    // Serve HLS to every WebKit/Safari browser (incl. iOS Chrome/Firefox);
+    // DASH/MPD to everyone else.
+    const isSafariUA = needsFairPlay(ua);
 
     if (isMpdRequest && isSafariUA) {
       const hlsRest = rest.replace(/\.mpd(\?.*)?$/i, ".m3u8$1");

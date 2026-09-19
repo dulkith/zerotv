@@ -3,7 +3,7 @@
 import { LoginDialog } from "@/components/login-dialog";
 import { AppHeader } from "@/components/app-header";
 import { BottomNav } from "@/components/bottom-nav";
-import { getDeviceUid } from "@/lib/auth";
+import { checkAutoLogin } from "@/lib/auth";
 import { Clapperboard, Film, Radio } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -14,33 +14,21 @@ export default function LandingPage() {
   const [copyrightAcknowledged, setCopyrightAcknowledged] = useState(false);
 
   useEffect(() => {
-    const ctrl = new AbortController();
-    getDeviceUid().then((uid) => {
-      fetch("/api/auth/auto-login", {
-        method: "POST",
-        headers: { "x-device-uid": uid },
-        signal: ctrl.signal,
-      })
-        .then((r) => r.json())
-        .then((d) => {
-          if (!ctrl.signal.aborted) {
-            setSignedIn(d.signedIn || false);
-            setAuthChecked(true);
-            if (d.signedIn && window.location.search.includes("signin=1")) {
-              window.history.replaceState(null, "", window.location.pathname);
-            }
-          }
-        })
-        .catch(() => { if (!ctrl.signal.aborted) setAuthChecked(true); });
+    let active = true;
+    checkAutoLogin().then((d) => {
+      if (!active) return;
+      setSignedIn(d.signedIn);
+      setAuthChecked(true);
+      if (d.signedIn && window.location.search.includes("signin=1")) {
+        window.history.replaceState(null, "", window.location.pathname);
+      }
     });
-
     const params = new URLSearchParams(window.location.search);
     if (params.get("signin") === "1") {
       setLoginOpen(true);
       window.history.replaceState(null, "", window.location.pathname);
     }
-
-    return () => ctrl.abort();
+    return () => { active = false; };
   }, []);
 
   const goHome = () => { window.location.href = "/home"; };

@@ -53,3 +53,40 @@ export async function authFetch(url: string, init?: RequestInit): Promise<Respon
     headers: { "x-device-uid": uid, ...init?.headers },
   });
 }
+
+// ── Auto-login (deduplicated) ────────────────────────────────
+// Every page renders <AppHeader/> and both the page and the header need the
+// signed-in state, but they must NOT each fire their own /api/auth/auto-login
+// request. The in-flight promise is cached per device-uid so the first caller
+// pays the network cost and the rest reuse the same result.
+export interface AutoLoginResult {
+  signedIn: boolean;
+  mobileNumber: string | null;
+}
+
+let _autoLoginUid = "";
+let _autoLoginPromise: Promise<AutoLoginResult> | null = null;
+
+export async function checkAutoLogin(force = false): Promise<AutoLoginResult> {
+  const uid = await getDeviceUid();
+  if (!force && _autoLoginPromise && _autoLoginUid === uid) return _autoLoginPromise;
+  _autoLoginUid = uid;
+  _autoLoginPromise = fetch("/api/auth/auto-login", {
+    method: "POST",
+    headers: { "x-device-uid": uid },
+  })
+    .then((r) => r.json())
+    .then(
+      (d: { signedIn?: boolean; mobileNumber?: string | null }): AutoLoginResult => ({
+        signedIn: !!d?.signedIn,
+        mobileNumber: d?.mobileNumber ?? null,
+      })
+    )
+    .catch((): AutoLoginResult => ({ signedIn: false, mobileNumber: null }));
+  return _autoLoginPromise;
+}
+
+export function clearAutoLoginCache(): void {
+  _autoLoginUid = "";
+  _autoLoginPromise = null;
+}
